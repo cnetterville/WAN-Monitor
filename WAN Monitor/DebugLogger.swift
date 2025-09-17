@@ -11,7 +11,7 @@ struct DebugLogger {
     // Compile-time debug flag - set to false for production
     private static let isDebugEnabled = true
     
-    static func log(_ message: String, category: String = "DEBUG") {
+    nonisolated static func log(_ message: String, category: String = "DEBUG") {
         #if DEBUG
         if isDebugEnabled {
             print("[\(category)] \(message)")
@@ -19,7 +19,7 @@ struct DebugLogger {
         #endif
     }
     
-    static func logError(_ message: String, error: Error? = nil) {
+    nonisolated static func logError(_ message: String, error: Error? = nil) {
         #if DEBUG
         if let error = error {
             print("[ERROR] \(message): \(error)")
@@ -36,19 +36,19 @@ struct DebugLogger {
         #endif
     }
     
-    static func logSNMP(_ message: String) {
+    nonisolated static func logSNMP(_ message: String) {
         log(message, category: "SNMP")
     }
     
-    static func logUI(_ message: String) {
+    nonisolated static func logUI(_ message: String) {
         log(message, category: "UI")
     }
     
-    static func logConfig(_ message: String) {
+    nonisolated static func logConfig(_ message: String) {
         log(message, category: "CONFIG")
     }
     
-    static func logNetwork(_ message: String) {
+    nonisolated static func logNetwork(_ message: String) {
         log(message, category: "NETWORK")
     }
 }
