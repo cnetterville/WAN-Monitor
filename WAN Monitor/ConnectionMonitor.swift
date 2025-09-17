@@ -465,10 +465,18 @@ class ConnectionMonitor: ObservableObject {
         
         activeMonitoringTasks.append(contentsOf: [taskId1, taskId2])
         
-        async let device1Update = updateLatency(for: 1, taskId: taskId1)
-        async let device2Update = updateLatency(for: 2, taskId: taskId2)
-        
-        let _ = await (device1Update, device2Update)
+        // Update devices concurrently
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.updateLatency(for: 1, taskId: taskId1)
+            }
+            group.addTask {
+                await self.updateLatency(for: 2, taskId: taskId2)
+            }
+            
+            // Wait for both tasks to complete
+            for await _ in group {}
+        }
         
         // Remove tasks from active list
         if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
