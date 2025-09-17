@@ -20,7 +20,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             print("DEBUG: Device 1 config: host=\(NetworkConfiguration.shared.device1Host), label=\(NetworkConfiguration.shared.device1Label)")
             print("DEBUG: Device 2 config: host=\(NetworkConfiguration.shared.device2Host), label=\(NetworkConfiguration.shared.device2Label)")
             Task { @MainActor in
-                await self.monitor.startMonitoring()
+                self.monitor.startMonitoring()
             }
         }
     }
@@ -204,15 +204,16 @@ class StatusBarController: NSObject, NSWindowDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         
-        statusItem.popUpMenu(menu)
+        // Use the menu property instead of deprecated popUpMenu
+        statusItem.menu = menu
     }
     
     @objc private func toggleMonitoring() {
         Task { @MainActor in
             if self.monitor.isMonitoring {
-                await self.monitor.stopMonitoring()
+                self.monitor.stopMonitoring()
             } else {
-                await self.monitor.startMonitoring()
+                self.monitor.startMonitoring()
             }
         }
     }
@@ -268,9 +269,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     deinit {
-        Task { @MainActor in
-            await monitor.stopMonitoring()
-        }
+        // We can't use Task in deinit, so we need to call stopMonitoring directly
+        // The monitor should handle its own cleanup properly
         cancellables.removeAll()
         statusItem = nil
         settingsWindow?.close()
@@ -356,11 +356,6 @@ struct ConnectionStatusIcon: View {
                     Text(uploadFormatted.value)
                         .frame(width: speedWidth, alignment: .trailing)
                         .foregroundColor(.primary)
-                        .overlay(
-                            // Debug overlay to see the exact bounds
-                            Rectangle()
-                                .stroke(Color.red.opacity(0.3), lineWidth: 0.5)
-                        )
                     HStack(spacing: 1) {
                         Text(uploadFormatted.unit)
                             .foregroundColor(.secondary)
@@ -374,11 +369,6 @@ struct ConnectionStatusIcon: View {
                     Text(downloadFormatted.value)
                         .frame(width: speedWidth, alignment: .trailing)
                         .foregroundColor(.primary)
-                        .overlay(
-                            // Debug overlay to see the exact bounds
-                            Rectangle()
-                                .stroke(Color.blue.opacity(0.3), lineWidth: 0.5)
-                        )
                     HStack(spacing: 1) {
                         Text(downloadFormatted.unit)
                             .foregroundColor(.secondary)

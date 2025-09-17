@@ -20,6 +20,7 @@ enum SpeedDisplayUnit: String, CaseIterable {
     }
 }
 
+@MainActor
 class NetworkConfiguration: ObservableObject {
     static let shared = NetworkConfiguration()
     
@@ -47,7 +48,7 @@ class NetworkConfiguration: ObservableObject {
     // Speed display preference
     @Published var speedDisplayUnit: SpeedDisplayUnit = .bits
     
-    nonisolated private init() {
+    private init() {
         // Load configuration synchronously to avoid race conditions
         loadConfiguration()
     }

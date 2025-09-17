@@ -41,7 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Try to access SNMP sender to trigger initialization
         DispatchQueue.global(qos: .background).async {
             for attempt in 1...10 {
-                if let snmp = SnmpSender.shared {
+                if SnmpSender.shared != nil {
                     print("DEBUG: SNMP initialized successfully on attempt \(attempt)")
                     return
                 } else {

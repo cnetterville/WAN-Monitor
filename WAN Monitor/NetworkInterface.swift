@@ -96,7 +96,7 @@ class NetworkInterfaceDiscovery {
             let speedValue = speedDict[index]
             let speed = speedValue.flatMap(UInt.init).map { formatSpeed($0 * 1_000_000) } ?? "N/A"
             
-            var interface = NetworkInterface(
+            let interface = NetworkInterface(
                 index: index,
                 name: name,
                 description: description,

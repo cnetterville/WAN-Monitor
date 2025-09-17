@@ -74,31 +74,36 @@ class ConnectionMonitor: ObservableObject {
     private var timer: Timer?
     private var latencyTimer: Timer?
     
-    init(configuration: NetworkConfiguration = NetworkConfiguration.shared) {
-        self.configuration = configuration
+    init(configuration: NetworkConfiguration? = nil) {
+        // Use provided configuration or get shared instance on main actor
+        if let config = configuration {
+            self.configuration = config
+        } else {
+            self.configuration = NetworkConfiguration.shared
+        }
         
-        print("DEBUG: ConnectionMonitor init - Device 1: \(configuration.device1Host) (\(configuration.device1Label))")
-        print("DEBUG: ConnectionMonitor init - Device 2: \(configuration.device2Host) (\(configuration.device2Label))")
+        print("DEBUG: ConnectionMonitor init - Device 1: \(self.configuration.device1Host) (\(self.configuration.device1Label))")
+        print("DEBUG: ConnectionMonitor init - Device 2: \(self.configuration.device2Host) (\(self.configuration.device2Label))")
         
         // Create device monitors with current configuration values
         self.device1Monitor = DeviceMonitor(
             deviceIndex: 1,
-            host: configuration.device1Host,
-            community: configuration.device1Community,
-            port: configuration.device1Port,
-            label: configuration.device1Label,
-            interfaceName: configuration.device1InterfaceName,
-            pingHost: configuration.pingHost1
+            host: self.configuration.device1Host,
+            community: self.configuration.device1Community,
+            port: self.configuration.device1Port,
+            label: self.configuration.device1Label,
+            interfaceName: self.configuration.device1InterfaceName,
+            pingHost: self.configuration.pingHost1
         )
         
         self.device2Monitor = DeviceMonitor(
             deviceIndex: 2,
-            host: configuration.device2Host,
-            community: configuration.device2Community,
-            port: configuration.device2Port,
-            label: configuration.device2Label,
-            interfaceName: configuration.device2InterfaceName,
-            pingHost: configuration.pingHost2
+            host: self.configuration.device2Host,
+            community: self.configuration.device2Community,
+            port: self.configuration.device2Port,
+            label: self.configuration.device2Label,
+            interfaceName: self.configuration.device2InterfaceName,
+            pingHost: self.configuration.pingHost2
         )
         
         // Observe configuration changes and recreate monitors
@@ -150,7 +155,7 @@ class ConnectionMonitor: ObservableObject {
         // Restart monitoring if it was active
         if wasMonitoring {
             Task { @MainActor in
-                await self.startMonitoring()
+                self.startMonitoring()
             }
         }
     }
@@ -422,14 +427,25 @@ class ConnectionMonitor: ObservableObject {
     }
     
     private func updateAllLatency() async {
-        // Update both devices concurrently
-        async let device1Update = updateLatency(for: 1)
-        async let device2Update = updateLatency(for: 2)
-        
-        let _ = await (device1Update, device2Update)
+        let start = CFAbsoluteTimeGetCurrent()
+        // Update both devices concurrently using a task group
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return }
+                await self.updateLatency(for: 1)
+            }
+            group.addTask { [weak self] in
+                guard let self else { return }
+                await self.updateLatency(for: 2)
+            }
+            await group.waitForAll()
+        }
+        let duration = CFAbsoluteTimeGetCurrent() - start
+        print("DEBUG: updateAllLatency completed in \(String(format: "%.3f", duration))s")
     }
     
     private func updateLatency(for deviceIndex: Int) async {
+        let start = CFAbsoluteTimeGetCurrent()
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         
         // Run latency check on background thread with proper isolation
@@ -448,5 +464,8 @@ class ConnectionMonitor: ObservableObject {
             self.device2Latency = latency
             self.device2FormattedLatency = formatted
         }
+        let duration = CFAbsoluteTimeGetCurrent() - start
+        print("DEBUG: updateLatency(for: \(deviceIndex)) took \(String(format: "%.3f", duration))s")
     }
 }
+

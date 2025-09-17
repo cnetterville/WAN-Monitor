@@ -35,8 +35,8 @@ struct SettingsView: View {
                         configuration.saveConfiguration()
                         // Restart monitoring with new settings
                         Task {
-                            await monitor.stopMonitoring()
-                            await monitor.startMonitoring()
+                            monitor.stopMonitoring()
+                            monitor.startMonitoring()
                         }
                         onClose()
                     }
