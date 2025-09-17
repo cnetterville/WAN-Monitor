@@ -11,13 +11,6 @@ import Foundation
 actor SNMPActor {
     static let shared = SNMPActor()
     
-    // Serial queue for shell operations to prevent resource exhaustion
-    private let serialQueue = DispatchQueue(label: "snmp-operations", qos: .utility)
-    
-    // Process pool to reuse shell processes
-    private var processPool: [Process] = []
-    private let maxPoolSize = 3
-    
     // Rate limiting
     private var lastRequestTime: Date = Date.distantPast
     private let minRequestInterval: TimeInterval = 0.5 // Minimum time between requests
@@ -33,16 +26,7 @@ actor SNMPActor {
         }
         lastRequestTime = Date()
         
-        return try await withCheckedThrowingContinuation { continuation in
-            serialQueue.async {
-                do {
-                    let result = try self.executeSnmpWalk(host: host, community: community, oid: oid)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        return try await executeSnmpWalk(host: host, community: community, oid: oid)
     }
     
     func performSNMPGet(host: String, community: String, oid: String) async throws -> UInt64 {
@@ -54,20 +38,10 @@ actor SNMPActor {
         }
         lastRequestTime = Date()
         
-        return try await withCheckedThrowingContinuation { continuation in
-            serialQueue.async {
-                do {
-                    let result = try self.executeSnmpGet(host: host, community: community, oid: oid)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        return try await executeSnmpGet(host: host, community: community, oid: oid)
     }
     
-    // Private sync methods that run on the serial queue
-    private func executeSnmpWalk(host: String, community: String, oid: String) throws -> [Int: String] {
+    nonisolated private func executeSnmpWalk(host: String, community: String, oid: String) async throws -> [Int: String] {
         #if DEBUG
         print("DEBUG: Starting snmpwalk for host=\(host), community=\(community), oid=\(oid)")
         #endif
@@ -88,39 +62,43 @@ actor SNMPActor {
         process.standardError = pipe
         
         try process.run()
-        process.waitUntilExit()
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        
-        if process.terminationStatus == 0 {
-            var results: [Int: String] = [:]
-            
-            for line in output.components(separatedBy: .newlines) {
-                let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedLine.isEmpty {
-                    let parts = trimmedLine.components(separatedBy: " ")
-                    if parts.count >= 2 {
-                        let oidPart = parts[0]
-                        let value = parts[1...].joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                        
-                        if let lastDot = oidPart.lastIndex(of: ".") {
-                            let indexStr = String(oidPart[oidPart.index(after: lastDot)...])
-                            if let index = Int(indexStr) {
-                                results[index] = value
+        return try await withCheckedThrowingContinuation { continuation in
+            Task.detached {
+                process.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                
+                if process.terminationStatus == 0 {
+                    var results: [Int: String] = [:]
+                    
+                    for line in output.components(separatedBy: .newlines) {
+                        let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedLine.isEmpty {
+                            let parts = trimmedLine.components(separatedBy: " ")
+                            if parts.count >= 2 {
+                                let oidPart = parts[0]
+                                let value = parts[1...].joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                                
+                                if let lastDot = oidPart.lastIndex(of: ".") {
+                                    let indexStr = String(oidPart[oidPart.index(after: lastDot)...])
+                                    if let index = Int(indexStr) {
+                                        results[index] = value
+                                    }
+                                }
                             }
                         }
                     }
+                    
+                    continuation.resume(returning: results)
+                } else {
+                    continuation.resume(throwing: NetworkDiscoveryError.connectionTimeout)
                 }
             }
-            
-            return results
-        } else {
-            throw NetworkDiscoveryError.connectionTimeout
         }
     }
     
-    private func executeSnmpGet(host: String, community: String, oid: String) throws -> UInt64 {
+    nonisolated private func executeSnmpGet(host: String, community: String, oid: String) async throws -> UInt64 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/snmpget")
         process.arguments = [
@@ -137,19 +115,23 @@ actor SNMPActor {
         process.standardError = pipe
         
         try process.run()
-        process.waitUntilExit()
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        
-        if process.terminationStatus == 0 {
-            if let value = UInt64(output) {
-                return value
-            } else {
-                throw NetworkDiscoveryError.invalidResponse
+        return try await withCheckedThrowingContinuation { continuation in
+            Task.detached {
+                process.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                
+                if process.terminationStatus == 0 {
+                    if let value = UInt64(output) {
+                        continuation.resume(returning: value)
+                    } else {
+                        continuation.resume(throwing: NetworkDiscoveryError.invalidResponse)
+                    }
+                } else {
+                    continuation.resume(throwing: NetworkDiscoveryError.connectionTimeout)
+                }
             }
-        } else {
-            throw NetworkDiscoveryError.connectionTimeout
         }
     }
 }
