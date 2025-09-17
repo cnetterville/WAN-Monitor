@@ -9,13 +9,26 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
+        VStack(spacing: 20) {
+            Image(systemName: "network")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Hello, world!")
+            
+            Text("WAN Monitor")
+                .font(.title2)
+                .fontWeight(.semibold)
+            
+            Text("Running in menu bar")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Button("Quit") {
+                NSApplication.shared.terminate(nil)
+            }
+            .buttonStyle(.bordered)
         }
-        .padding()
+        .padding(40)
+        .frame(minWidth: 200)
     }
 }
 
