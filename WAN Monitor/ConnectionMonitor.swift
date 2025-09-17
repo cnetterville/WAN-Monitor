@@ -27,10 +27,9 @@ class ConnectionMonitor: ObservableObject {
     var device1AvailableInterfaces: [NetworkInterface] {
         get { _device1AvailableInterfaces }
         set { 
-            print("DEBUG: Device 1 interfaces being set to \(newValue.count) interfaces")
+            DebugLogger.logUI("Device 1 interfaces being set to \(newValue.count) interfaces")
             if newValue.isEmpty && !_device1AvailableInterfaces.isEmpty {
-                print("DEBUG: WARNING - Attempting to clear non-empty Device 1 interface list!")
-                print("DEBUG: Call stack: \(Thread.callStackSymbols.prefix(5).joined(separator: "\n"))")
+                DebugLogger.logError("WARNING - Attempting to clear non-empty Device 1 interface list!")
             }
             _device1AvailableInterfaces = newValue 
         }
@@ -51,10 +50,9 @@ class ConnectionMonitor: ObservableObject {
     var device2AvailableInterfaces: [NetworkInterface] {
         get { _device2AvailableInterfaces }
         set { 
-            print("DEBUG: Device 2 interfaces being set to \(newValue.count) interfaces")
+            DebugLogger.logUI("Device 2 interfaces being set to \(newValue.count) interfaces")
             if newValue.isEmpty && !_device2AvailableInterfaces.isEmpty {
-                print("DEBUG: WARNING - Attempting to clear non-empty Device 2 interface list!")
-                print("DEBUG: Call stack: \(Thread.callStackSymbols.prefix(5).joined(separator: "\n"))")
+                DebugLogger.logError("WARNING - Attempting to clear non-empty Device 2 interface list!")
             }
             _device2AvailableInterfaces = newValue 
         }
@@ -70,9 +68,15 @@ class ConnectionMonitor: ObservableObject {
     private var device1Monitor: DeviceMonitor
     private var device2Monitor: DeviceMonitor
     
-    // MARK: - Monitoring State
-    private var timer: Timer?
-    private var latencyTimer: Timer?
+    // MARK: - Consolidated Timer Management
+    private var consolidatedTimer: Timer?
+    private var monitoringCycle: Int = 0
+    private let trafficUpdateCycles = 1 // Update traffic every cycle
+    private let latencyUpdateCycles = 3 // Update latency every 3 cycles (less frequently)
+    
+    // MARK: - Task Management
+    private var activeDiscoveryTasks: [UUID] = []
+    private var activeMonitoringTasks: [UUID] = []
     
     init(configuration: NetworkConfiguration? = nil) {
         // Use provided configuration or get shared instance on main actor
@@ -82,8 +86,8 @@ class ConnectionMonitor: ObservableObject {
             self.configuration = NetworkConfiguration.shared
         }
         
-        print("DEBUG: ConnectionMonitor init - Device 1: \(self.configuration.device1Host) (\(self.configuration.device1Label))")
-        print("DEBUG: ConnectionMonitor init - Device 2: \(self.configuration.device2Host) (\(self.configuration.device2Label))")
+        DebugLogger.logConfig("ConnectionMonitor init - Device 1: \(self.configuration.device1Host) (\(self.configuration.device1Label))")
+        DebugLogger.logConfig("ConnectionMonitor init - Device 2: \(self.configuration.device2Host) (\(self.configuration.device2Label))")
         
         // Create device monitors with current configuration values
         self.device1Monitor = DeviceMonitor(
@@ -131,6 +135,9 @@ class ConnectionMonitor: ObservableObject {
             stopMonitoring()
         }
         
+        // Cancel active tasks
+        cancelAllActiveTasks()
+        
         // Recreate device monitors with new configuration
         device1Monitor = DeviceMonitor(
             deviceIndex: 1,
@@ -160,13 +167,34 @@ class ConnectionMonitor: ObservableObject {
         }
     }
     
+    // MARK: - Task Management
+    
+    private func cancelAllActiveTasks() {
+        // Cancel discovery tasks
+        for taskId in activeDiscoveryTasks {
+            Task {
+                await SNMPManager.shared.cancelTask(taskId: taskId)
+            }
+        }
+        activeDiscoveryTasks.removeAll()
+        
+        // Cancel monitoring tasks
+        for taskId in activeMonitoringTasks {
+            Task {
+                await SNMPManager.shared.cancelTask(taskId: taskId)
+            }
+        }
+        activeMonitoringTasks.removeAll()
+    }
+    
     // MARK: - Public Interface
     
     func startMonitoring() {
         guard !isMonitoring else { return }
         isMonitoring = true
+        monitoringCycle = 0
         
-        print("DEBUG: Starting monitoring for both devices")
+        DebugLogger.logNetwork("Starting monitoring for both devices")
         
         // Reset device states
         device1Monitor.resetState()
@@ -176,101 +204,84 @@ class ConnectionMonitor: ObservableObject {
         
         // Start interface discovery for both devices before monitoring
         Task {
-            print("DEBUG: Starting interface discovery for both devices")
+            DebugLogger.logNetwork("Starting interface discovery for both devices")
             await discoverInterfaces(for: 1)
             await discoverInterfaces(for: 2)
-            print("DEBUG: Interface discovery completed, starting traffic monitoring")
+            DebugLogger.logNetwork("Interface discovery completed, starting consolidated monitoring")
         }
         
-        // Start monitoring timers with a delay to allow interface discovery
+        // Start consolidated monitoring timer with a delay to allow interface discovery
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-            self.startTrafficMonitoring()
-            self.startLatencyMonitoring()
+            self.startConsolidatedMonitoring()
         }
     }
     
     func stopMonitoring() {
         isMonitoring = false
-        timer?.invalidate()
-        timer = nil
-        latencyTimer?.invalidate()
-        latencyTimer = nil
+        
+        // Stop consolidated timer
+        consolidatedTimer?.invalidate()
+        consolidatedTimer = nil
+        
+        // Cancel all active tasks
+        cancelAllActiveTasks()
+        
         resetUIState()
     }
     
     func discoverInterfaces(for deviceIndex: Int) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
+        let taskId = UUID()
+        activeDiscoveryTasks.append(taskId)
         
-        print("DEBUG: ===== STARTING INTERFACE DISCOVERY FOR DEVICE \(deviceIndex) =====")
+        DebugLogger.logNetwork("===== STARTING INTERFACE DISCOVERY FOR DEVICE \(deviceIndex) =====")
         
         if deviceIndex == 1 {
             device1IsDiscoveringInterfaces = true
             device1ErrorMessage = nil
-            // Don't clear interfaces immediately - keep the old ones until we have new ones
-            print("DEBUG: Device 1 discovery started, current interface count: \(device1AvailableInterfaces.count)")
+            DebugLogger.logUI("Device 1 discovery started, current interface count: \(device1AvailableInterfaces.count)")
         } else {
             device2IsDiscoveringInterfaces = true
             device2ErrorMessage = nil
-            print("DEBUG: Device 2 discovery started, current interface count: \(device2AvailableInterfaces.count)")
+            DebugLogger.logUI("Device 2 discovery started, current interface count: \(device2AvailableInterfaces.count)")
         }
         
         do {
-            // Run interface discovery on background thread with proper isolation
-            let interfaces = try await withCheckedThrowingContinuation { continuation in
-                Task.detached { [monitor] in
-                    do {
-                        print("DEBUG: Starting background discovery task for device \(deviceIndex)")
-                        let result = try await monitor.discoverInterfaces()
-                        print("DEBUG: Background discovery completed for device \(deviceIndex), found \(result.count) interfaces")
-                        continuation.resume(returning: result)
-                    } catch {
-                        print("DEBUG: Background discovery failed for device \(deviceIndex): \(error)")
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+            // Use the centralized SNMP manager instead of direct Task.detached
+            let interfaces = try await monitor.discoverInterfaces(using: SNMPManager.shared, taskId: taskId)
             
-            print("DEBUG: Discovery successful for device \(deviceIndex), updating UI with \(interfaces.count) interfaces")
+            DebugLogger.logNetwork("Discovery successful for device \(deviceIndex), updating UI with \(interfaces.count) interfaces")
             
             // Update UI on main actor
             if deviceIndex == 1 {
                 self.device1AvailableInterfaces = interfaces
                 self.device1IsDiscoveringInterfaces = false
                 self.device1ErrorMessage = nil
-                print("DEBUG: Device 1 interfaces updated: \(self.device1AvailableInterfaces.count) interfaces")
-                print("DEBUG: Device 1 interface names: \(self.device1AvailableInterfaces.map { $0.name }.joined(separator: ", "))")
+                DebugLogger.logUI("Device 1 interfaces updated: \(self.device1AvailableInterfaces.count) interfaces")
             } else {
                 self.device2AvailableInterfaces = interfaces
                 self.device2IsDiscoveringInterfaces = false
                 self.device2ErrorMessage = nil
-                print("DEBUG: Device 2 interfaces updated: \(self.device2AvailableInterfaces.count) interfaces")
-                print("DEBUG: Device 2 interface names: \(self.device2AvailableInterfaces.map { $0.name }.joined(separator: ", "))")
-            }
-            
-            // Add a delay and check if the interfaces are still there
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                if deviceIndex == 1 {
-                    print("DEBUG: 3 seconds later - Device 1 still has \(self.device1AvailableInterfaces.count) interfaces")
-                } else {
-                    print("DEBUG: 3 seconds later - Device 2 still has \(self.device2AvailableInterfaces.count) interfaces")
-                }
+                DebugLogger.logUI("Device 2 interfaces updated: \(self.device2AvailableInterfaces.count) interfaces")
             }
             
         } catch {
-            print("DEBUG: Discovery failed for device \(deviceIndex): \(error)")
+            DebugLogger.logError("Discovery failed for device \(deviceIndex)", error: error)
             if deviceIndex == 1 {
                 self.device1ErrorMessage = error.localizedDescription
                 self.device1IsDiscoveringInterfaces = false
-                // Don't clear interfaces on error - keep the last successful discovery
-                print("DEBUG: Device 1 discovery failed, keeping existing \(self.device1AvailableInterfaces.count) interfaces")
             } else {
                 self.device2ErrorMessage = error.localizedDescription
                 self.device2IsDiscoveringInterfaces = false
-                print("DEBUG: Device 2 discovery failed, keeping existing \(self.device2AvailableInterfaces.count) interfaces")
             }
         }
         
-        print("DEBUG: ===== DISCOVERY PROCESS COMPLETED FOR DEVICE \(deviceIndex) =====")
+        // Remove task from active list
+        if let index = activeDiscoveryTasks.firstIndex(of: taskId) {
+            activeDiscoveryTasks.remove(at: index)
+        }
+        
+        DebugLogger.logNetwork("===== DISCOVERY PROCESS COMPLETED FOR DEVICE \(deviceIndex) =====")
     }
     
     // MARK: - Convenience Properties for Backwards Compatibility
@@ -314,9 +325,7 @@ class ConnectionMonitor: ObservableObject {
     // MARK: - Private Methods
     
     private func resetUIState() {
-        print("DEBUG: ===== RESETTING UI STATE =====")
-        print("DEBUG: Before reset - Device 1 interfaces: \(device1AvailableInterfaces.count)")
-        print("DEBUG: Before reset - Device 2 interfaces: \(device2AvailableInterfaces.count)")
+        DebugLogger.logUI("===== RESETTING UI STATE =====")
         
         device1UploadSpeed = 0.0
         device1DownloadSpeed = 0.0
@@ -325,8 +334,6 @@ class ConnectionMonitor: ObservableObject {
         device1Latency = nil
         device1FormattedLatency = "-"
         device1ErrorMessage = nil
-        // Don't reset interfaces - they should persist until explicitly rediscovered
-        // device1AvailableInterfaces = []
         
         device2UploadSpeed = 0.0
         device2DownloadSpeed = 0.0
@@ -335,44 +342,77 @@ class ConnectionMonitor: ObservableObject {
         device2Latency = nil
         device2FormattedLatency = "-"
         device2ErrorMessage = nil
-        // Don't reset interfaces - they should persist until explicitly rediscovered  
-        // device2AvailableInterfaces = []
         
-        print("DEBUG: After reset - Device 1 interfaces: \(device1AvailableInterfaces.count)")
-        print("DEBUG: After reset - Device 2 interfaces: \(device2AvailableInterfaces.count)")
-        print("DEBUG: ===== UI STATE RESET COMPLETED =====")
+        DebugLogger.logUI("===== UI STATE RESET COMPLETED =====")
     }
     
-    private func startTrafficMonitoring() {
-        // Increase the update interval to reduce SNMP pressure and avoid crashes
+    // MARK: - Consolidated Monitoring
+    
+    private func startConsolidatedMonitoring() {
+        // Use a safer interval and consolidate all monitoring into one timer
         let saferInterval = max(configuration.updateInterval, 5.0) // Minimum 5 seconds
         
-        timer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
+        consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.updateAllTrafficData()
+                await self?.performConsolidatedUpdate()
             }
         }
     }
     
-    private func startLatencyMonitoring() {
-        latencyTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.updateAllLatency()
-            }
+    private func performConsolidatedUpdate() async {
+        guard isMonitoring else { return }
+        
+        monitoringCycle += 1
+        DebugLogger.logNetwork("=== Consolidated monitoring cycle \(monitoringCycle) ===")
+        
+        // Always update traffic data
+        if monitoringCycle % trafficUpdateCycles == 0 {
+            await updateAllTrafficData()
+        }
+        
+        // Update latency less frequently to reduce load
+        if monitoringCycle % latencyUpdateCycles == 0 {
+            await updateAllLatency()
         }
     }
     
     private func updateAllTrafficData() async {
-        // Don't update both devices simultaneously to avoid SNMP race conditions
-        await updateTrafficData(for: 1)
+        // Stagger device updates to avoid overwhelming the network devices
+        let taskId1 = UUID()
+        let taskId2 = UUID()
+        
+        activeMonitoringTasks.append(contentsOf: [taskId1, taskId2])
+        
+        // Update device 1 first
+        await updateTrafficData(for: 1, taskId: taskId1)
         
         // Add delay between device updates
-        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+        do {
+            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+        } catch {
+            // Task was cancelled, clean up and return
+            if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
+                activeMonitoringTasks.remove(at: index1)
+            }
+            if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
+                activeMonitoringTasks.remove(at: index2)
+            }
+            return
+        }
         
-        await updateTrafficData(for: 2)
+        // Update device 2
+        await updateTrafficData(for: 2, taskId: taskId2)
+        
+        // Remove tasks from active list
+        if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
+            activeMonitoringTasks.remove(at: index1)
+        }
+        if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
+            activeMonitoringTasks.remove(at: index2)
+        }
     }
     
-    private func updateTrafficData(for deviceIndex: Int) async {
+    private func updateTrafficData(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         let availableInterfaces = deviceIndex == 1 ? device1AvailableInterfaces : device2AvailableInterfaces
         
@@ -380,21 +420,16 @@ class ConnectionMonitor: ObservableObject {
             // Add circuit breaker logic - skip if too many consecutive failures
             let currentErrorMessage = deviceIndex == 1 ? device1ErrorMessage : device2ErrorMessage
             if let error = currentErrorMessage, error.contains("unreachable") {
-                // Skip this update cycle if device was marked as unreachable recently
+                DebugLogger.logNetwork("Device \(deviceIndex) - Skipping update due to unreachable status")
                 return
             }
             
-            // Run SNMP operations on background thread with proper isolation
-            let (upload, download, formattedUpload, formattedDownload) = try await withCheckedThrowingContinuation { continuation in
-                Task.detached { [monitor, availableInterfaces] in
-                    do {
-                        let result = try await monitor.updateTrafficData(availableInterfaces: availableInterfaces)
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+            // Use centralized SNMP manager with proper task management
+            let (upload, download, formattedUpload, formattedDownload) = try await monitor.updateTrafficData(
+                availableInterfaces: availableInterfaces, 
+                using: SNMPManager.shared, 
+                taskId: taskId
+            )
             
             // Update UI on main actor
             if deviceIndex == 1 {
@@ -419,42 +454,35 @@ class ConnectionMonitor: ObservableObject {
                 self.device2ErrorMessage = errorMessage
             }
             
-            // If device is unreachable, reduce update frequency to prevent crashes
-            if errorMessage.contains("unreachable") {
-                print("DEBUG: Device \(deviceIndex) unreachable, will retry in next cycle")
-            }
+            DebugLogger.logError("Device \(deviceIndex) traffic update failed", error: error)
         }
     }
     
     private func updateAllLatency() async {
-        let start = CFAbsoluteTimeGetCurrent()
-        // Update both devices concurrently using a task group
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { return }
-                await self.updateLatency(for: 1)
-            }
-            group.addTask { [weak self] in
-                guard let self else { return }
-                await self.updateLatency(for: 2)
-            }
-            await group.waitForAll()
+        // Update both devices concurrently but with proper task management
+        let taskId1 = UUID()
+        let taskId2 = UUID()
+        
+        activeMonitoringTasks.append(contentsOf: [taskId1, taskId2])
+        
+        async let device1Update = updateLatency(for: 1, taskId: taskId1)
+        async let device2Update = updateLatency(for: 2, taskId: taskId2)
+        
+        let _ = await (device1Update, device2Update)
+        
+        // Remove tasks from active list
+        if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
+            activeMonitoringTasks.remove(at: index1)
         }
-        let duration = CFAbsoluteTimeGetCurrent() - start
-        print("DEBUG: updateAllLatency completed in \(String(format: "%.3f", duration))s")
+        if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
+            activeMonitoringTasks.remove(at: index2)
+        }
     }
     
-    private func updateLatency(for deviceIndex: Int) async {
-        let start = CFAbsoluteTimeGetCurrent()
+    private func updateLatency(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         
-        // Run latency check on background thread with proper isolation
-        let (latency, formatted) = await withCheckedContinuation { continuation in
-            Task.detached { [monitor] in
-                let result = await monitor.updateLatency()
-                continuation.resume(returning: result)
-            }
-        }
+        let (latency, formatted) = await monitor.updateLatency(taskId: taskId)
         
         // Update UI on main actor
         if deviceIndex == 1 {
@@ -464,8 +492,5 @@ class ConnectionMonitor: ObservableObject {
             self.device2Latency = latency
             self.device2FormattedLatency = formatted
         }
-        let duration = CFAbsoluteTimeGetCurrent() - start
-        print("DEBUG: updateLatency(for: \(deviceIndex)) took \(String(format: "%.3f", duration))s")
     }
 }
-

@@ -7,6 +7,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var monitor: ConnectionMonitor
     private var cancellables = Set<AnyCancellable>()
     private var settingsWindow: NSWindow?
+    
+    // MARK: - Cached Rendering Components
+    private var cachedHostingController: NSHostingController<StatusBarView>?
+    private var cachedTargetSize = CGSize(width: 320, height: 22)
+    private var lastRenderTime = Date.distantPast
+    private let minRenderInterval: TimeInterval = 0.5 // Limit rendering to 2 FPS max
 
     override init() {
         self.monitor = ConnectionMonitor()
@@ -16,9 +22,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Wait longer for configuration to load, then start monitoring
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            print("DEBUG: StatusBarController - Starting monitoring after configuration load delay")
-            print("DEBUG: Device 1 config: host=\(NetworkConfiguration.shared.device1Host), label=\(NetworkConfiguration.shared.device1Label)")
-            print("DEBUG: Device 2 config: host=\(NetworkConfiguration.shared.device2Host), label=\(NetworkConfiguration.shared.device2Label)")
+            DebugLogger.logUI("StatusBarController - Starting monitoring after configuration load delay")
+            DebugLogger.logConfig("Device 1 config: host=\(NetworkConfiguration.shared.device1Host), label=\(NetworkConfiguration.shared.device1Label)")
+            DebugLogger.logConfig("Device 2 config: host=\(NetworkConfiguration.shared.device2Host), label=\(NetworkConfiguration.shared.device2Label)")
             Task { @MainActor in
                 self.monitor.startMonitoring()
             }
@@ -37,9 +43,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     private func setupMonitorObservers() {
-        // Observe monitor changes and update display
+        // Observe monitor changes and update display with throttling
         monitor.objectWillChange
-            .receive(on: DispatchQueue.main)
+            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main) // Throttle updates
             .sink { [weak self] _ in
                 self?.updateDisplay()
             }
@@ -47,8 +53,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Observe configuration changes and update display
         NetworkConfiguration.shared.objectWillChange
-            .receive(on: DispatchQueue.main)
+            .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
+                // Clear cached controller when config changes
+                self?.cachedHostingController = nil
                 self?.updateDisplay()
             }
             .store(in: &cancellables)
@@ -57,6 +65,13 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private func updateDisplay() {
         guard let statusItem = statusItem else { return }
         guard let button = statusItem.button else { return }
+        
+        // Throttle rendering
+        let now = Date()
+        guard now.timeIntervalSince(lastRenderTime) >= minRenderInterval else {
+            return
+        }
+        lastRenderTime = now
         
         let config = NetworkConfiguration.shared
         
@@ -79,15 +94,15 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2LatencyFormatted: monitor.device2FormattedLatency
         )
         
-        // Render SwiftUI view to image
-        if let image = renderSwiftUIViewToImage(swiftUIView) {
+        // Try to render SwiftUI view to image with caching
+        if let image = renderSwiftUIViewToImageCached(swiftUIView) {
             button.image = image
             button.title = ""
         } else {
             // Fallback to simple text for both devices
             let text = String(format: "%@ %.0f↑%.0f↓ %@ %.0f↑%.0f↓",
                              config.device1Label,
-                             monitor.device1UploadSpeed * 8 / 1_000_000, // Convert to Mbps
+                             monitor.device1UploadSpeed * 8 / 1_000_000,
                              monitor.device1DownloadSpeed * 8 / 1_000_000,
                              config.device2Label,
                              monitor.device2UploadSpeed * 8 / 1_000_000,
@@ -97,18 +112,26 @@ class StatusBarController: NSObject, NSWindowDelegate {
         }
     }
     
-    private func renderSwiftUIViewToImage<V: View>(_ view: V) -> NSImage? {
-        let hostingController = NSHostingController(rootView: view)
-        let targetSize = CGSize(width: 320, height: 22) // Slightly wider for two devices
+    private func renderSwiftUIViewToImageCached(_ view: StatusBarView) -> NSImage? {
+        // Reuse the hosting controller if possible
+        if cachedHostingController == nil {
+            cachedHostingController = NSHostingController(rootView: view)
+            
+            cachedHostingController?.view.frame = CGRect(origin: .zero, size: cachedTargetSize)
+            cachedHostingController?.view.wantsLayer = true
+        } else {
+            // Update the existing hosting controller's root view
+            cachedHostingController?.rootView = view
+        }
         
-        hostingController.view.frame = CGRect(origin: .zero, size: targetSize)
-        hostingController.view.wantsLayer = true
+        guard let hostingController = cachedHostingController else { return nil }
+        
         hostingController.view.layoutSubtreeIfNeeded()
         
         guard let bitmapRep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: Int(targetSize.width),
-            pixelsHigh: Int(targetSize.height),
+            pixelsWide: Int(cachedTargetSize.width),
+            pixelsHigh: Int(cachedTargetSize.height),
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -123,14 +146,14 @@ class StatusBarController: NSObject, NSWindowDelegate {
         NSGraphicsContext.current = context
         
         let cgContext = context!.cgContext
-        cgContext.translateBy(x: 0, y: targetSize.height)
+        cgContext.translateBy(x: 0, y: cachedTargetSize.height)
         cgContext.scaleBy(x: 1, y: -1)
         
         hostingController.view.layer?.render(in: cgContext)
         
         NSGraphicsContext.restoreGraphicsState()
         
-        let image = NSImage(size: targetSize)
+        let image = NSImage(size: cachedTargetSize)
         image.addRepresentation(bitmapRep)
         image.isTemplate = false
         
@@ -265,16 +288,25 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     @objc private func quit() {
+        // Cleanup before quitting
+        Task { @MainActor in
+            await SNMPManager.shared.cancelAllTasks()
+        }
         NSApplication.shared.terminate(nil)
     }
     
     deinit {
-        // We can't use Task in deinit, so we need to call stopMonitoring directly
-        // The monitor should handle its own cleanup properly
+        // Cleanup cached components
+        cachedHostingController = nil
         cancellables.removeAll()
         statusItem = nil
         settingsWindow?.close()
         settingsWindow = nil
+        
+        // Cancel all SNMP operations
+        Task {
+            await SNMPManager.shared.cancelAllTasks()
+        }
     }
     
     // MARK: - NSWindowDelegate
