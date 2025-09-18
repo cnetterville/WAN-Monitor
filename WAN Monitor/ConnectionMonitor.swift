@@ -194,19 +194,23 @@ class ConnectionMonitor: ObservableObject {
         isMonitoring = true
         monitoringCycle = 0
         
-        DebugLogger.logNetwork("Starting monitoring for both devices")
+        DebugLogger.logNetwork("Starting monitoring for devices (Device 2 enabled: \(configuration.device2Enabled))")
         
         // Reset device states
         device1Monitor.resetState()
-        device2Monitor.resetState()
+        if configuration.device2Enabled {
+            device2Monitor.resetState()
+        }
         
         resetUIState()
         
-        // Start interface discovery for both devices before monitoring
+        // Start interface discovery for enabled devices before monitoring
         Task {
-            DebugLogger.logNetwork("Starting interface discovery for both devices")
+            DebugLogger.logNetwork("Starting interface discovery for enabled devices")
             await discoverInterfaces(for: 1)
-            await discoverInterfaces(for: 2)
+            if configuration.device2Enabled {
+                await discoverInterfaces(for: 2)
+            }
             DebugLogger.logNetwork("Interface discovery completed, starting consolidated monitoring")
         }
         
@@ -230,6 +234,12 @@ class ConnectionMonitor: ObservableObject {
     }
     
     func discoverInterfaces(for deviceIndex: Int) async {
+        // Skip device 2 if it's disabled
+        if deviceIndex == 2 && !configuration.device2Enabled {
+            DebugLogger.logNetwork("Skipping interface discovery for Device 2 - disabled")
+            return
+        }
+        
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         let taskId = UUID()
         activeDiscoveryTasks.append(taskId)
@@ -258,7 +268,7 @@ class ConnectionMonitor: ObservableObject {
                 self.device1IsDiscoveringInterfaces = false
                 self.device1ErrorMessage = nil
                 DebugLogger.logUI("Device 1 interfaces updated: \(self.device1AvailableInterfaces.count) interfaces")
-            } else {
+            } else if configuration.device2Enabled {
                 self.device2AvailableInterfaces = interfaces
                 self.device2IsDiscoveringInterfaces = false
                 self.device2ErrorMessage = nil
@@ -270,7 +280,7 @@ class ConnectionMonitor: ObservableObject {
             if deviceIndex == 1 {
                 self.device1ErrorMessage = error.localizedDescription
                 self.device1IsDiscoveringInterfaces = false
-            } else {
+            } else if configuration.device2Enabled {
                 self.device2ErrorMessage = error.localizedDescription
                 self.device2IsDiscoveringInterfaces = false
             }
@@ -346,7 +356,7 @@ class ConnectionMonitor: ObservableObject {
         DebugLogger.logUI("===== UI STATE RESET COMPLETED =====")
     }
     
-    // MARK: - Consolidated Monitoring
+    // MARK: - Resilient Consolidated Monitoring
     
     private func startConsolidatedMonitoring() {
         // Use a safer interval and consolidate all monitoring into one timer
@@ -354,7 +364,10 @@ class ConnectionMonitor: ObservableObject {
         
         consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.performConsolidatedUpdate()
+                guard let self = self else { return }
+                
+                // Simply call the monitoring update - errors are handled within the method
+                await self.performConsolidatedUpdate()
             }
         }
     }
@@ -365,65 +378,52 @@ class ConnectionMonitor: ObservableObject {
         monitoringCycle += 1
         DebugLogger.logNetwork("=== Consolidated monitoring cycle \(monitoringCycle) ===")
         
-        // Always update traffic data
+        // Always update traffic data with error handling
         if monitoringCycle % trafficUpdateCycles == 0 {
-            await updateAllTrafficData()
+            await updateAllTrafficDataWithRetry()
         }
         
         // Update latency less frequently to reduce load
         if monitoringCycle % latencyUpdateCycles == 0 {
-            await updateAllLatency()
+            await updateAllLatencyWithRetry()
+        }
+        
+        // Periodic interface rediscovery for failed devices
+        if monitoringCycle % 20 == 0 { // Every 20 cycles, check for interface rediscovery
+            await performPeriodicInterfaceRediscovery()
         }
     }
     
-    private func updateAllTrafficData() async {
-        // Stagger device updates to avoid overwhelming the network devices
-        let taskId1 = UUID()
-        let taskId2 = UUID()
-        
-        activeMonitoringTasks.append(contentsOf: [taskId1, taskId2])
-        
+    private func updateAllTrafficDataWithRetry() async {
         // Update device 1 first
-        await updateTrafficData(for: 1, taskId: taskId1)
+        let taskId1 = UUID()
+        activeMonitoringTasks.append(taskId1)
         
-        // Add delay between device updates
-        do {
-            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
-        } catch {
-            // Task was cancelled, clean up and return
-            if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
-                activeMonitoringTasks.remove(at: index1)
-            }
-            if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
-                activeMonitoringTasks.remove(at: index2)
-            }
-            return
+        await updateTrafficDataWithRetry(for: 1, taskId: taskId1)
+        
+        // Only update device 2 if it's enabled
+        if configuration.device2Enabled {
+            // Add delay between device updates - use try? to ignore cancellation
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+            
+            let taskId2 = UUID()
+            activeMonitoringTasks.append(taskId2)
+            
+            await updateTrafficDataWithRetry(for: 2, taskId: taskId2)
+            
+            // Remove device 2 task from active list
+            cleanupTasks([taskId2])
         }
         
-        // Update device 2
-        await updateTrafficData(for: 2, taskId: taskId2)
-        
-        // Remove tasks from active list
-        if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
-            activeMonitoringTasks.remove(at: index1)
-        }
-        if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
-            activeMonitoringTasks.remove(at: index2)
-        }
+        // Remove device 1 task from active list
+        cleanupTasks([taskId1])
     }
     
-    private func updateTrafficData(for deviceIndex: Int, taskId: UUID) async {
+    private func updateTrafficDataWithRetry(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         let availableInterfaces = deviceIndex == 1 ? device1AvailableInterfaces : device2AvailableInterfaces
         
         do {
-            // Add circuit breaker logic - skip if too many consecutive failures
-            let currentErrorMessage = deviceIndex == 1 ? device1ErrorMessage : device2ErrorMessage
-            if let error = currentErrorMessage, error.contains("unreachable") {
-                DebugLogger.logNetwork("Device \(deviceIndex) - Skipping update due to unreachable status")
-                return
-            }
-            
             // Use centralized SNMP manager with proper task management
             let (upload, download, formattedUpload, formattedDownload) = try await monitor.updateTrafficData(
                 availableInterfaces: availableInterfaces, 
@@ -446,6 +446,29 @@ class ConnectionMonitor: ObservableObject {
                 self.device2ErrorMessage = nil
             }
             
+        } catch NetworkDiscoveryError.interfaceNotFound {
+            // Interface rediscovery needed
+            DebugLogger.logNetwork("Device \(deviceIndex) - Interface not found, triggering rediscovery")
+            Task {
+                await self.discoverInterfaces(for: deviceIndex)
+            }
+            
+            let errorMessage = "Interface discovery needed"
+            if deviceIndex == 1 {
+                self.device1ErrorMessage = errorMessage
+            } else {
+                self.device2ErrorMessage = errorMessage
+            }
+            
+        } catch NetworkDiscoveryError.deviceUnreachable {
+            // Circuit breaker is open, show appropriate message
+            let errorMessage = "Device temporarily unreachable (backing off)"
+            if deviceIndex == 1 {
+                self.device1ErrorMessage = errorMessage
+            } else {
+                self.device2ErrorMessage = errorMessage
+            }
+            
         } catch {
             let errorMessage = error.localizedDescription
             if deviceIndex == 1 {
@@ -458,36 +481,38 @@ class ConnectionMonitor: ObservableObject {
         }
     }
     
-    private func updateAllLatency() async {
-        // Update both devices concurrently but with proper task management
+    private func updateAllLatencyWithRetry() async {
+        // Update both devices concurrently but with proper error handling
         let taskId1 = UUID()
-        let taskId2 = UUID()
+        activeMonitoringTasks.append(taskId1)
         
-        activeMonitoringTasks.append(contentsOf: [taskId1, taskId2])
-        
-        // Update devices concurrently
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await self.updateLatency(for: 1, taskId: taskId1)
-            }
-            group.addTask {
-                await self.updateLatency(for: 2, taskId: taskId2)
+        if configuration.device2Enabled {
+            let taskId2 = UUID()
+            activeMonitoringTasks.append(taskId2)
+            
+            // Update devices concurrently with individual error handling
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    await self.updateLatencyWithRetry(for: 1, taskId: taskId1)
+                }
+                group.addTask {
+                    await self.updateLatencyWithRetry(for: 2, taskId: taskId2)
+                }
+                
+                // Wait for both tasks to complete
+                for await _ in group {}
             }
             
-            // Wait for both tasks to complete
-            for await _ in group {}
-        }
-        
-        // Remove tasks from active list
-        if let index1 = activeMonitoringTasks.firstIndex(of: taskId1) {
-            activeMonitoringTasks.remove(at: index1)
-        }
-        if let index2 = activeMonitoringTasks.firstIndex(of: taskId2) {
-            activeMonitoringTasks.remove(at: index2)
+            // Remove tasks from active list
+            cleanupTasks([taskId1, taskId2])
+        } else {
+            // Only update device 1
+            await updateLatencyWithRetry(for: 1, taskId: taskId1)
+            cleanupTasks([taskId1])
         }
     }
     
-    private func updateLatency(for deviceIndex: Int, taskId: UUID) async {
+    private func updateLatencyWithRetry(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         
         let (latency, formatted) = await monitor.updateLatency(taskId: taskId)
@@ -499,6 +524,38 @@ class ConnectionMonitor: ObservableObject {
         } else {
             self.device2Latency = latency
             self.device2FormattedLatency = formatted
+        }
+    }
+    
+    private func performPeriodicInterfaceRediscovery() async {
+        // Check if any devices need interface rediscovery based on error states
+        let device1NeedsRediscovery = device1ErrorMessage?.contains("Interface") ?? false ||
+                                     device1ErrorMessage?.contains("not found") ?? false ||
+                                     device1AvailableInterfaces.isEmpty
+        
+        if device1NeedsRediscovery {
+            DebugLogger.logNetwork("Periodic rediscovery triggered for Device 1")
+            await discoverInterfaces(for: 1)
+        }
+        
+        // Only check device 2 if it's enabled
+        if configuration.device2Enabled {
+            let device2NeedsRediscovery = device2ErrorMessage?.contains("Interface") ?? false ||
+                                         device2ErrorMessage?.contains("not found") ?? false ||
+                                         device2AvailableInterfaces.isEmpty
+            
+            if device2NeedsRediscovery {
+                DebugLogger.logNetwork("Periodic rediscovery triggered for Device 2")
+                await discoverInterfaces(for: 2)
+            }
+        }
+    }
+    
+    private func cleanupTasks(_ taskIds: [UUID]) {
+        for taskId in taskIds {
+            if let index = activeMonitoringTasks.firstIndex(of: taskId) {
+                activeMonitoringTasks.remove(at: index)
+            }
         }
     }
 }

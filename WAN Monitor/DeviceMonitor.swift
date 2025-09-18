@@ -27,6 +27,70 @@ struct DeviceData: Sendable {
     }
 }
 
+// MARK: - Circuit Breaker Implementation
+
+private struct CircuitBreaker {
+    enum State {
+        case closed    // Normal operation
+        case open      // Failing, skip requests
+        case halfOpen  // Testing if service recovered
+    }
+    
+    var state: State = .closed
+    var failureCount = 0
+    var lastFailureTime: Date?
+    var nextRetryTime: Date?
+    
+    // Configuration
+    let failureThreshold = 5
+    let recoveryTimeInterval: TimeInterval = 30.0 // 30 seconds
+    let maxBackoffInterval: TimeInterval = 300.0  // 5 minutes
+    
+    mutating func recordSuccess() {
+        state = .closed
+        failureCount = 0
+        lastFailureTime = nil
+        nextRetryTime = nil
+    }
+    
+    mutating func recordFailure() {
+        failureCount += 1
+        lastFailureTime = Date()
+        
+        if failureCount >= failureThreshold {
+            state = .open
+            // Calculate exponential backoff
+            let backoffInterval = min(
+                recoveryTimeInterval * pow(2.0, Double(min(failureCount - failureThreshold, 6))),
+                maxBackoffInterval
+            )
+            nextRetryTime = Date().addingTimeInterval(backoffInterval)
+        }
+    }
+    
+    mutating func canAttemptRequest() -> Bool {
+        switch state {
+        case .closed:
+            return true
+        case .open:
+            guard let nextRetry = nextRetryTime, Date() >= nextRetry else {
+                return false
+            }
+            // Transition to half-open for testing
+            state = .halfOpen
+            return true
+        case .halfOpen:
+            return true
+        }
+    }
+    
+    func getBackoffDelay() -> TimeInterval? {
+        guard let nextRetry = nextRetryTime else { return nil }
+        let delay = nextRetry.timeIntervalSinceNow
+        return delay > 0 ? delay : nil
+    }
+}
+
 final class DeviceMonitor: Sendable {
     let deviceIndex: Int
     let host: String
@@ -42,8 +106,9 @@ final class DeviceMonitor: Sendable {
     private var _lastInOctets: UInt64?
     private var _lastOutOctets: UInt64?
     private var _lastTimestamp: Date?
-    private var _consecutiveFailures = 0
-    private let maxConsecutiveFailures = 5
+    private var _circuitBreaker = CircuitBreaker()
+    private var _lastInterfaceDiscovery: Date?
+    private var _interfaceDiscoveryInterval: TimeInterval = 300.0 // 5 minutes
     
     // SNMP OIDs - try 64-bit counters for high speed interfaces
     private let ifHCInOctetsOID = "1.3.6.1.2.1.31.1.1.1.6"   // 64-bit counter
@@ -54,7 +119,33 @@ final class DeviceMonitor: Sendable {
     private var _smoothedDownloadSpeed: Double = 0.0
     private let smoothingFactor: Double = 0.9
     
-    // Thread-safe accessors (keeping existing implementation for now)
+    // Thread-safe accessors with circuit breaker
+    private var circuitBreaker: CircuitBreaker {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _circuitBreaker
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _circuitBreaker = newValue
+        }
+    }
+    
+    private var lastInterfaceDiscovery: Date? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _lastInterfaceDiscovery
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _lastInterfaceDiscovery = newValue
+        }
+    }
+    
     private var interfaceIndex: Int? {
         get {
             lock.lock()
@@ -130,19 +221,6 @@ final class DeviceMonitor: Sendable {
             lock.lock()
             defer { lock.unlock() }
             _smoothedDownloadSpeed = newValue
-        }
-    }
-    
-    private var consecutiveFailures: Int {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _consecutiveFailures
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _consecutiveFailures = newValue
         }
     }
     
@@ -237,16 +315,28 @@ final class DeviceMonitor: Sendable {
         return sortedInterfaces
     }
     
-    // MARK: - Optimized Traffic Data Update
+    // MARK: - Optimized Traffic Data Update with Circuit Breaker
     
     func updateTrafficData(availableInterfaces: [NetworkInterface], using snmpManager: SNMPManager = SNMPManager.shared, taskId: UUID = UUID()) async throws -> (upload: Double, download: Double, formattedUpload: (String, String), formattedDownload: (String, String)) {
-        // Skip if too many consecutive failures to avoid issues
-        guard consecutiveFailures < 3 else {
-            DebugLogger.logNetwork("\(label) - Skipping update due to consecutive failures (\(consecutiveFailures))")
+        
+        // Check circuit breaker before attempting request
+        var currentCircuitBreaker = circuitBreaker
+        
+        guard currentCircuitBreaker.canAttemptRequest() else {
+            if let backoffDelay = currentCircuitBreaker.getBackoffDelay() {
+                DebugLogger.logNetwork("\(label) - Circuit breaker OPEN, retrying in \(Int(backoffDelay))s")
+            }
             throw NetworkDiscoveryError.deviceUnreachable
         }
         
-        DebugLogger.logSNMP("\(label) - Starting traffic update")
+        // Check if we need to rediscover interfaces
+        let shouldRediscoverInterfaces = shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
+        if shouldRediscoverInterfaces {
+            DebugLogger.logNetwork("\(label) - Interface rediscovery needed")
+            throw NetworkDiscoveryError.interfaceNotFound
+        }
+        
+        DebugLogger.logSNMP("\(label) - Starting traffic update (Circuit Breaker: \(currentCircuitBreaker.state))")
         
         // Ensure we have interface index
         if interfaceIndex == nil {
@@ -268,7 +358,8 @@ final class DeviceMonitor: Sendable {
             }
             
             guard interfaceIndex != nil else {
-                consecutiveFailures += 1
+                currentCircuitBreaker.recordFailure()
+                circuitBreaker = currentCircuitBreaker
                 DebugLogger.logError("\(label) - No suitable interface found")
                 throw NetworkDiscoveryError.interfaceNotFound
             }
@@ -362,8 +453,9 @@ final class DeviceMonitor: Sendable {
                 lastOutOctets = currentOutOctets
                 lastTimestamp = now
                 
-                // Reset error state on success
-                consecutiveFailures = 0
+                // Record success in circuit breaker
+                currentCircuitBreaker.recordSuccess()
+                circuitBreaker = currentCircuitBreaker
                 
                 return (smoothedUploadSpeed, smoothedDownloadSpeed, formatSpeed(smoothedUploadSpeed), formatSpeed(smoothedDownloadSpeed))
             } else {
@@ -373,17 +465,46 @@ final class DeviceMonitor: Sendable {
                 lastOutOctets = currentOutOctets
                 lastTimestamp = now
                 
+                // Record success in circuit breaker
+                currentCircuitBreaker.recordSuccess()
+                circuitBreaker = currentCircuitBreaker
+                
                 return (0.0, 0.0, ("-", "-"), ("-", "-"))
             }
             
         } catch {
-            consecutiveFailures += 1
-            DebugLogger.logError("\(label) - Traffic update error, consecutive failures: \(consecutiveFailures)", error: error)
+            // Record failure in circuit breaker
+            currentCircuitBreaker.recordFailure()
+            circuitBreaker = currentCircuitBreaker
+            
+            DebugLogger.logError("\(label) - Traffic update error, circuit breaker failures: \(currentCircuitBreaker.failureCount)", error: error)
             throw error
         }
     }
     
-    // MARK: - Optimized Latency Update
+    // MARK: - Interface Rediscovery Logic
+    
+    private func shouldRediscoverInterfaces(availableInterfaces: [NetworkInterface]) -> Bool {
+        // If no interfaces available, always rediscover
+        if availableInterfaces.isEmpty {
+            return true
+        }
+        
+        // If we have an interface index but it's not in available interfaces, rediscover
+        if let currentIndex = interfaceIndex,
+           !availableInterfaces.contains(where: { $0.index == currentIndex }) {
+            return true
+        }
+        
+        // Periodic rediscovery
+        if let lastDiscovery = lastInterfaceDiscovery {
+            return Date().timeIntervalSince(lastDiscovery) > _interfaceDiscoveryInterval
+        }
+        
+        return false
+    }
+    
+    // MARK: - Latency Update
     
     func updateLatency(taskId: UUID = UUID()) async -> (latency: Double?, formatted: String) {
         let host = pingHost.isEmpty ? "8.8.8.8" : pingHost
@@ -431,7 +552,7 @@ final class DeviceMonitor: Sendable {
             return (nil as Double?, "-")
         }
     }
-    
+
     func resetState() {
         lock.lock()
         defer { lock.unlock() }
@@ -440,7 +561,8 @@ final class DeviceMonitor: Sendable {
         _lastTimestamp = nil
         _smoothedUploadSpeed = 0.0
         _smoothedDownloadSpeed = 0.0
-        _consecutiveFailures = 0
+        _circuitBreaker = CircuitBreaker()
+        _lastInterfaceDiscovery = nil
     }
     
     private func formatSpeed(_ bytesPerSecond: Double) -> (value: String, unit: String) {

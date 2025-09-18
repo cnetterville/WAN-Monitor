@@ -37,6 +37,7 @@ class NetworkConfiguration: ObservableObject {
     @Published var device2Port = 161
     @Published var device2Label = "PW"
     @Published var device2InterfaceName = ""
+    @Published var device2Enabled = true
     
     // Ping targets
     @Published var pingHost1 = "8.8.8.8"
@@ -72,7 +73,8 @@ class NetworkConfiguration: ObservableObject {
         defaults.set(device2Port, forKey: "device2Port")
         defaults.set(device2Label, forKey: "device2Label")
         defaults.set(device2InterfaceName, forKey: "device2InterfaceName")
-        DebugLogger.logConfig("Saved Device 2 - Host: \(device2Host), Label: \(device2Label), Interface: '\(device2InterfaceName)'")
+        defaults.set(device2Enabled, forKey: "device2Enabled")
+        DebugLogger.logConfig("Saved Device 2 - Host: \(device2Host), Label: \(device2Label), Interface: '\(device2InterfaceName)', Enabled: \(device2Enabled)")
         
         // Ping hosts
         defaults.set(pingHost1, forKey: "pingHost1")
@@ -82,7 +84,7 @@ class NetworkConfiguration: ObservableObject {
         // Speed display unit
         defaults.set(speedDisplayUnit.rawValue, forKey: "speedDisplayUnit")
         
-        DebugLogger.logConfig("Configuration saved - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label))")
+        DebugLogger.logConfig("Configuration saved - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label)) [Enabled: \(device2Enabled)]")
     }
     
     private func loadConfiguration() {
@@ -147,6 +149,11 @@ class NetworkConfiguration: ObservableObject {
             device2InterfaceName = interfaceName
         }
         
+        // Device 2 enabled state - defaults to true for existing configurations
+        if defaults.object(forKey: "device2Enabled") != nil {
+            device2Enabled = defaults.bool(forKey: "device2Enabled")
+        }
+        
         // Ping hosts and other settings
         if let ping1 = defaults.object(forKey: "pingHost1") as? String {
             pingHost1 = ping1
@@ -166,6 +173,6 @@ class NetworkConfiguration: ObservableObject {
         }
         
         DebugLogger.logConfig("Configuration loading completed")
-        DebugLogger.logConfig("Final config - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label))")
+        DebugLogger.logConfig("Final config - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label)) [Enabled: \(device2Enabled)]")
     }
 }

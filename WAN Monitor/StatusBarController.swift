@@ -39,6 +39,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
         button.target = self
         button.action = #selector(statusItemClicked)
         
+        // Don't set a persistent menu - let the action handle it
+        statusItem.menu = nil
+        
         updateDisplay()
     }
     
@@ -75,7 +78,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         let config = NetworkConfiguration.shared
         
-        // Create SwiftUI view using real data from both devices
+        // Create SwiftUI view using real data from enabled devices
         let swiftUIView = StatusBarView(
             device1Label: config.device1Label,
             device1Up: monitor.device1UploadSpeed,
@@ -91,7 +94,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2Latency: monitor.device2Latency ?? 0.0,
             device2UpFormatted: monitor.device2FormattedUploadSpeed,
             device2DownFormatted: monitor.device2FormattedDownloadSpeed,
-            device2LatencyFormatted: monitor.device2FormattedLatency
+            device2LatencyFormatted: monitor.device2FormattedLatency,
+            
+            device2Enabled: config.device2Enabled
         )
         
         // Try to render SwiftUI view to image with sharp rendering
@@ -99,15 +104,23 @@ class StatusBarController: NSObject, NSWindowDelegate {
             button.image = image
             button.title = ""
         } else {
-            // Fallback to simple text for both devices
-            let text = String(format: "%@ %.0f↑%.0f↓ %@ %.0f↑%.0f↓",
-                             config.device1Label,
-                             monitor.device1UploadSpeed * 8 / 1_000_000,
-                             monitor.device1DownloadSpeed * 8 / 1_000_000,
-                             config.device2Label,
-                             monitor.device2UploadSpeed * 8 / 1_000_000,
-                             monitor.device2DownloadSpeed * 8 / 1_000_000)
-            button.title = text
+            // Fallback to simple text for enabled devices
+            if config.device2Enabled {
+                let text = String(format: "%@ %.0f↑%.0f↓ %@ %.0f↑%.0f↓",
+                                 config.device1Label,
+                                 monitor.device1UploadSpeed * 8 / 1_000_000,
+                                 monitor.device1DownloadSpeed * 8 / 1_000_000,
+                                 config.device2Label,
+                                 monitor.device2UploadSpeed * 8 / 1_000_000,
+                                 monitor.device2DownloadSpeed * 8 / 1_000_000)
+                button.title = text
+            } else {
+                let text = String(format: "%@ %.0f↑%.0f↓",
+                                 config.device1Label,
+                                 monitor.device1UploadSpeed * 8 / 1_000_000,
+                                 monitor.device1DownloadSpeed * 8 / 1_000_000)
+                button.title = text
+            }
             button.image = nil
         }
     }
@@ -204,7 +217,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         menu.addItem(NSMenuItem(title: "WAN Monitor", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         
-        // Show real data in menu for both devices
+        // Show real data in menu for enabled devices
         if monitor.isMonitoring {
             // Device 1 info
             let device1Item = NSMenuItem(title: String(format: "%@: ↓%@%@ ↑%@%@ (%@)", 
@@ -217,16 +230,18 @@ class StatusBarController: NSObject, NSWindowDelegate {
                                   action: nil, keyEquivalent: "")
             menu.addItem(device1Item)
             
-            // Device 2 info
-            let device2Item = NSMenuItem(title: String(format: "%@: ↓%@%@ ↑%@%@ (%@)", 
-                                                config.device2Label,
-                                                monitor.device2FormattedDownloadSpeed.value,
-                                                monitor.device2FormattedDownloadSpeed.unit,
-                                                monitor.device2FormattedUploadSpeed.value,
-                                                monitor.device2FormattedUploadSpeed.unit,
-                                                monitor.device2FormattedLatency == "-" ? "- ms" : "\(monitor.device2FormattedLatency) ms"), 
-                                  action: nil, keyEquivalent: "")
-            menu.addItem(device2Item)
+            // Device 2 info - only if enabled
+            if config.device2Enabled {
+                let device2Item = NSMenuItem(title: String(format: "%@: ↓%@%@ ↑%@%@ (%@)", 
+                                                    config.device2Label,
+                                                    monitor.device2FormattedDownloadSpeed.value,
+                                                    monitor.device2FormattedDownloadSpeed.unit,
+                                                    monitor.device2FormattedUploadSpeed.value,
+                                                    monitor.device2FormattedUploadSpeed.unit,
+                                                    monitor.device2FormattedLatency == "-" ? "- ms" : "\(monitor.device2FormattedLatency) ms"), 
+                                      action: nil, keyEquivalent: "")
+                menu.addItem(device2Item)
+            }
             
             // Show errors if any
             if let error1 = monitor.device1ErrorMessage {
@@ -235,7 +250,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
                 menu.addItem(errorItem)
             }
             
-            if let error2 = monitor.device2ErrorMessage {
+            if config.device2Enabled, let error2 = monitor.device2ErrorMessage {
                 let errorItem = NSMenuItem(title: "\(config.device2Label) Error: \(error2)", action: nil, keyEquivalent: "")
                 errorItem.attributedTitle = NSAttributedString(string: "\(config.device2Label) Error: \(error2)", attributes: [.foregroundColor: NSColor.red])
                 menu.addItem(errorItem)
@@ -246,7 +261,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // Control menu items
+        // Control menu items - dynamically update based on current state
         let startStopTitle = monitor.isMonitoring ? "Stop Monitoring" : "Start Monitoring"
         let startStopItem = NSMenuItem(title: startStopTitle, action: #selector(toggleMonitoring), keyEquivalent: "")
         startStopItem.target = self
@@ -263,8 +278,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         
-        // Use the menu property instead of deprecated popUpMenu
-        statusItem.menu = menu
+        // Show the menu at the status item location
+        if let button = statusItem.button {
+            menu.popUp(positioning: nil, at: CGPoint(x: 0, y: button.bounds.height), in: button)
+        }
     }
     
     @objc private func toggleMonitoring() {
@@ -354,7 +371,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 }
 
-// Updated StatusBarView to work with dual device data
+// Updated StatusBarView to work with dual device data and support disabling device 2
 struct StatusBarView: View {
     let device1Label: String
     let device1Up: Double
@@ -372,6 +389,8 @@ struct StatusBarView: View {
     let device2DownFormatted: (value: String, unit: String)
     let device2LatencyFormatted: String
     
+    let device2Enabled: Bool
+    
     var body: some View {
         HStack(spacing: 6) {
             // Device 1
@@ -383,18 +402,21 @@ struct StatusBarView: View {
                 latencyValue: device1Latency
             )
             
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: 1, height: 16)
-            
-            // Device 2
-            ConnectionStatusIcon(
-                label: device2Label,
-                uploadFormatted: device2UpFormatted,
-                downloadFormatted: device2DownFormatted,
-                latencyFormatted: device2LatencyFormatted,
-                latencyValue: device2Latency
-            )
+            // Only show device 2 if enabled
+            if device2Enabled {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 1, height: 16)
+                
+                // Device 2
+                ConnectionStatusIcon(
+                    label: device2Label,
+                    uploadFormatted: device2UpFormatted,
+                    downloadFormatted: device2DownFormatted,
+                    latencyFormatted: device2LatencyFormatted,
+                    latencyValue: device2Latency
+                )
+            }
         }
         .font(.system(size: 10, weight: .regular, design: .monospaced))
         .foregroundColor(.white)

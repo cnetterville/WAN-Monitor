@@ -11,59 +11,87 @@ import Foundation
 actor SNMPManager {
     static let shared = SNMPManager()
     
-    // Process pool for reusing shell processes
-    private var processPool: [Process] = []
-    private let maxPoolSize = 5
+    // Process management for better cleanup
+    private var activeProcesses: [UUID: Process] = [:]
+    private let maxActiveProcesses = 5
     
-    // Rate limiting
+    // Rate limiting with adaptive behavior
     private var lastRequestTime = Date(timeIntervalSince1970: 0)
-    private let minRequestInterval: TimeInterval = 0.5 // 500ms between requests
+    private var minRequestInterval: TimeInterval = 0.5 // Start with 500ms
+    private var adaptiveDelay: TimeInterval = 0.0
+    private let maxAdaptiveDelay: TimeInterval = 5.0
     
     // Task management
     private var activeTasks: Set<UUID> = []
     private let maxConcurrentTasks = 3
+    
+    // Health tracking for adaptive behavior
+    private var recentFailures = 0
+    private var lastSuccessTime = Date()
     
     private init() {}
     
     // MARK: - Public Interface
     
     func performSnmpWalk(host: String, community: String, oid: String, taskId: UUID = UUID()) async throws -> [Int: String] {
-        try await rateLimitedOperation(taskId: taskId) {
-            try await self.shellSnmpWalk(host: host, community: community, oid: oid)
+        try await rateLimitedOperation(taskId: taskId, host: host) {
+            try await self.shellSnmpWalk(host: host, community: community, oid: oid, taskId: taskId)
         }
     }
     
     func performSnmpGet(host: String, community: String, oid: String, taskId: UUID = UUID()) async throws -> UInt64 {
-        try await rateLimitedOperation(taskId: taskId) {
-            try await self.shellSnmpGet(host: host, community: community, oid: oid)
+        try await rateLimitedOperation(taskId: taskId, host: host) {
+            try await self.shellSnmpGet(host: host, community: community, oid: oid, taskId: taskId)
         }
     }
     
     func cancelTask(taskId: UUID) {
         activeTasks.remove(taskId)
+        
+        // Terminate associated process if exists
+        if let process = activeProcesses[taskId] {
+            if process.isRunning {
+                process.terminate()
+                DebugLogger.logNetwork("Terminated process for cancelled task \(taskId)")
+            }
+            activeProcesses.removeValue(forKey: taskId)
+        }
     }
     
     func cancelAllTasks() {
         activeTasks.removeAll()
-        // Clean up process pool
-        processPool.forEach { $0.terminate() }
-        processPool.removeAll()
+        
+        // Terminate all active processes
+        for (taskId, process) in activeProcesses {
+            if process.isRunning {
+                process.terminate()
+                DebugLogger.logNetwork("Terminated process for task \(taskId)")
+            }
+        }
+        activeProcesses.removeAll()
     }
     
-    // MARK: - Private Implementation
+    // MARK: - Private Implementation with Adaptive Behavior
     
-    private func rateLimitedOperation<T>(taskId: UUID, operation: @escaping () async throws -> T) async throws -> T {
-        // Check if we should throttle this request
+    private func rateLimitedOperation<T>(taskId: UUID, host: String, operation: @escaping () async throws -> T) async throws -> T {
+        // Adaptive rate limiting based on recent failures
+        let currentInterval = minRequestInterval + adaptiveDelay
         let now = Date()
         let timeSinceLastRequest = now.timeIntervalSince(lastRequestTime)
         
-        if timeSinceLastRequest < minRequestInterval {
-            let delay = minRequestInterval - timeSinceLastRequest
+        if timeSinceLastRequest < currentInterval {
+            let delay = currentInterval - timeSinceLastRequest
             try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
         
         // Check concurrent task limit
         guard activeTasks.count < maxConcurrentTasks else {
+            throw NetworkDiscoveryError.tooManyRequests
+        }
+        
+        // Check if we have too many active processes
+        guard activeProcesses.count < maxActiveProcesses else {
+            DebugLogger.logError("Too many active SNMP processes, rejecting request")
             throw NetworkDiscoveryError.tooManyRequests
         }
         
@@ -74,23 +102,46 @@ actor SNMPManager {
             activeTasks.remove(taskId)
         }
         
-        return try await operation()
+        do {
+            let result = try await operation()
+            
+            // Record success - reduce adaptive delay
+            recentFailures = max(0, recentFailures - 1)
+            if recentFailures == 0 {
+                adaptiveDelay = max(0, adaptiveDelay - 0.1)
+            }
+            lastSuccessTime = Date()
+            
+            return result
+            
+        } catch {
+            // Record failure - increase adaptive delay
+            recentFailures += 1
+            adaptiveDelay = min(maxAdaptiveDelay, adaptiveDelay + 0.2)
+            
+            DebugLogger.logError("SNMP operation failed for \(host), adaptive delay now: \(adaptiveDelay)s", error: error)
+            throw error
+        }
     }
     
-    private func shellSnmpWalk(host: String, community: String, oid: String) async throws -> [Int: String] {
-        DebugLogger.logSNMP("Starting snmpwalk for host=\(host), oid=\(oid)")
+    private func shellSnmpWalk(host: String, community: String, oid: String, taskId: UUID) async throws -> [Int: String] {
+        DebugLogger.logSNMP("Starting snmpwalk for host=\(host), oid=\(oid), taskId=\(taskId)")
+        
+        // Capture adaptive timeout before entering Task.detached
+        let adaptiveTimeout = min(15, max(5, 8 + Int(adaptiveDelay)))
         
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached(priority: .utility) {
                 do {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/snmpwalk")
+                    
                     process.arguments = [
                         "-v2c",
                         "-c", community,
                         "-Oq", // Quiet output
-                        "-t", "8", // 8 second timeout
-                        "-r", "1", // 1 retry
+                        "-t", "\(adaptiveTimeout)", // Use captured timeout
+                        "-r", "1", // Single retry
                         host,
                         oid
                     ]
@@ -99,16 +150,25 @@ actor SNMPManager {
                     process.standardOutput = pipe
                     process.standardError = pipe
                     
+                    // Register process for cleanup
+                    await self.registerProcess(process, for: taskId)
+                    
                     try process.run()
                     
-                    // Add timeout protection
+                    // Add timeout protection with cleanup
                     let timeoutTask = Task {
-                        try await Task.sleep(nanoseconds: 10_000_000_000) // 10 seconds
-                        process.terminate()
+                        try await Task.sleep(nanoseconds: UInt64((adaptiveTimeout + 2) * 1_000_000_000))
+                        if process.isRunning {
+                            process.terminate()
+                            DebugLogger.logNetwork("Process timeout for task \(taskId)")
+                        }
                     }
                     
                     process.waitUntilExit()
                     timeoutTask.cancel()
+                    
+                    // Cleanup process registration
+                    await self.unregisterProcess(for: taskId)
                     
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8) ?? ""
@@ -141,6 +201,8 @@ actor SNMPManager {
                         continuation.resume(throwing: NetworkDiscoveryError.connectionTimeout)
                     }
                 } catch {
+                    // Ensure cleanup on error
+                    await self.unregisterProcess(for: taskId)
                     DebugLogger.logError("snmpwalk exception", error: error)
                     continuation.resume(throwing: error)
                 }
@@ -148,18 +210,22 @@ actor SNMPManager {
         }
     }
     
-    private func shellSnmpGet(host: String, community: String, oid: String) async throws -> UInt64 {
+    private func shellSnmpGet(host: String, community: String, oid: String, taskId: UUID) async throws -> UInt64 {
+        // Capture adaptive timeout before entering Task.detached
+        let adaptiveTimeout = min(10, max(3, 5 + Int(adaptiveDelay)))
+        
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached(priority: .utility) {
                 do {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/snmpget")
+                    
                     process.arguments = [
                         "-v2c",
                         "-c", community,
                         "-Oqv", // Quiet output, value only
-                        "-t", "5", // 5 second timeout
-                        "-r", "1", // 1 retry
+                        "-t", "\(adaptiveTimeout)", // Use captured timeout
+                        "-r", "1", // Single retry
                         host,
                         oid
                     ]
@@ -168,16 +234,25 @@ actor SNMPManager {
                     process.standardOutput = pipe
                     process.standardError = pipe
                     
+                    // Register process for cleanup
+                    await self.registerProcess(process, for: taskId)
+                    
                     try process.run()
                     
                     // Add timeout protection
                     let timeoutTask = Task {
-                        try await Task.sleep(nanoseconds: 6_000_000_000) // 6 seconds
-                        process.terminate()
+                        try await Task.sleep(nanoseconds: UInt64((adaptiveTimeout + 1) * 1_000_000_000))
+                        if process.isRunning {
+                            process.terminate()
+                            DebugLogger.logNetwork("Process timeout for task \(taskId)")
+                        }
                     }
                     
                     process.waitUntilExit()
                     timeoutTask.cancel()
+                    
+                    // Cleanup process registration
+                    await self.unregisterProcess(for: taskId)
                     
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -193,14 +268,51 @@ actor SNMPManager {
                         continuation.resume(throwing: NetworkDiscoveryError.connectionTimeout)
                     }
                 } catch {
+                    // Ensure cleanup on error
+                    await self.unregisterProcess(for: taskId)
                     continuation.resume(throwing: error)
                 }
             }
         }
     }
+    
+    // MARK: - Process Management
+    
+    private func registerProcess(_ process: Process, for taskId: UUID) {
+        activeProcesses[taskId] = process
+    }
+    
+    private func unregisterProcess(for taskId: UUID) {
+        activeProcesses.removeValue(forKey: taskId)
+    }
 }
 
-// Add new error case
+// MARK: - Enhanced Error Handling
+
 extension NetworkDiscoveryError {
-    static let tooManyRequests = NetworkDiscoveryError.deviceUnreachable // Reuse existing error for now
+    static let tooManyRequests = NetworkDiscoveryError.deviceUnreachable
+    
+    var shouldRetry: Bool {
+        switch self {
+        case .connectionTimeout, .deviceUnreachable:
+            return true
+        case .authenticationFailed, .snmpUnavailable:
+            return false
+        case .interfaceNotFound, .invalidResponse:
+            return true
+        }
+    }
+    
+    var retryDelay: TimeInterval {
+        switch self {
+        case .connectionTimeout:
+            return 5.0
+        case .deviceUnreachable:
+            return 10.0
+        case .interfaceNotFound:
+            return 30.0
+        default:
+            return 5.0
+        }
+    }
 }
