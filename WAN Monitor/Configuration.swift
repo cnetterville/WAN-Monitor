@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import ServiceManagement
 
 enum SpeedDisplayUnit: String, CaseIterable {
     case bits = "bits"
@@ -49,6 +50,16 @@ class NetworkConfiguration: ObservableObject {
     // Speed display preference
     @Published var speedDisplayUnit: SpeedDisplayUnit = .bits
     
+    // Auto-start monitoring on app launch
+    @Published var autoStartMonitoring: Bool = false
+    
+    // Start app at login
+    @Published var startAtLogin: Bool = false {
+        didSet {
+            updateLoginItemStatus()
+        }
+    }
+    
     private init() {
         // Load configuration synchronously to avoid race conditions
         loadConfiguration()
@@ -84,7 +95,11 @@ class NetworkConfiguration: ObservableObject {
         // Speed display unit
         defaults.set(speedDisplayUnit.rawValue, forKey: "speedDisplayUnit")
         
-        DebugLogger.logConfig("Configuration saved - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label)) [Enabled: \(device2Enabled)]")
+        // Auto-start monitoring
+        defaults.set(autoStartMonitoring, forKey: "autoStartMonitoring")
+        
+        // Start at login
+        defaults.set(startAtLogin, forKey: "startAtLogin")
     }
     
     private func loadConfiguration() {
@@ -172,7 +187,39 @@ class NetworkConfiguration: ObservableObject {
             speedDisplayUnit = speedUnit
         }
         
+        // Auto-start monitoring - defaults to false for opt-in behavior
+        if defaults.object(forKey: "autoStartMonitoring") != nil {
+            autoStartMonitoring = defaults.bool(forKey: "autoStartMonitoring")
+        }
+        
+        // Start at login - defaults to false for opt-in behavior
+        if defaults.object(forKey: "startAtLogin") != nil {
+            startAtLogin = defaults.bool(forKey: "startAtLogin")
+        }
+        
+        // Sync with actual login item status on startup
+        syncLoginItemStatus()
+        
         DebugLogger.logConfig("Configuration loading completed")
         DebugLogger.logConfig("Final config - Device 1: \(device1Host) (\(device1Label)), Device 2: \(device2Host) (\(device2Label)) [Enabled: \(device2Enabled)]")
+    }
+    
+    // MARK: - Login Item Management
+    
+    private func updateLoginItemStatus() {
+        do {
+            try LoginItemManager.shared.setLoginItemEnabled(startAtLogin)
+            DebugLogger.logConfig("Login item status updated: \(startAtLogin)")
+        } catch {
+            DebugLogger.logError("Failed to update login item status", error: error)
+        }
+    }
+    
+    private func syncLoginItemStatus() {
+        let actualStatus = LoginItemManager.shared.isLoginItemEnabled
+        if actualStatus != startAtLogin {
+            DebugLogger.logConfig("Syncing login item status from system: \(actualStatus)")
+            startAtLogin = actualStatus
+        }
     }
 }

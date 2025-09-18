@@ -161,6 +161,14 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
             }
             
+            Section("Startup Behavior") {
+                Toggle("Start monitoring automatically", isOn: $configuration.autoStartMonitoring)
+                    .help("When enabled, monitoring will start automatically when the app launches")
+                
+                Toggle("Launch at login", isOn: $configuration.startAtLogin)
+                    .help("When enabled, WAN Monitor will start automatically when you log in to your Mac")
+            }
+            
             Section("Network Testing") {
                 LabeledContent("Ping Target (Device 1)") {
                     TextField("8.8.8.8", text: $configuration.pingHost1)
@@ -247,6 +255,9 @@ struct SettingsView: View {
         configuration.pingHost1 = "8.8.8.8"
         configuration.pingHost2 = "1.1.1.1"
         configuration.updateInterval = 2.0
+        configuration.speedDisplayUnit = .bits
+        configuration.autoStartMonitoring = false
+        configuration.startAtLogin = false
         
         // Save the reset configuration
         configuration.saveConfiguration()

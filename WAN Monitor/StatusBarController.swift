@@ -20,13 +20,20 @@ class StatusBarController: NSObject, NSWindowDelegate {
         setupStatusItem()
         setupMonitorObservers()
         
-        // Wait longer for configuration to load, then start monitoring
+        // Wait longer for configuration to load, then start monitoring only if auto-start is enabled
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            DebugLogger.logUI("StatusBarController - Starting monitoring after configuration load delay")
-            DebugLogger.logConfig("Device 1 config: host=\(NetworkConfiguration.shared.device1Host), label=\(NetworkConfiguration.shared.device1Label)")
-            DebugLogger.logConfig("Device 2 config: host=\(NetworkConfiguration.shared.device2Host), label=\(NetworkConfiguration.shared.device2Label)")
-            Task { @MainActor in
-                self.monitor.startMonitoring()
+            let config = NetworkConfiguration.shared
+            DebugLogger.logUI("StatusBarController - Configuration loaded, auto-start: \(config.autoStartMonitoring)")
+            DebugLogger.logConfig("Device 1 config: host=\(config.device1Host), label=\(config.device1Label)")
+            DebugLogger.logConfig("Device 2 config: host=\(config.device2Host), label=\(config.device2Label)")
+            
+            if config.autoStartMonitoring {
+                DebugLogger.logUI("Auto-starting monitoring based on user preference")
+                Task { @MainActor in
+                    self.monitor.startMonitoring()
+                }
+            } else {
+                DebugLogger.logUI("Auto-start disabled - monitoring will not start automatically")
             }
         }
     }
