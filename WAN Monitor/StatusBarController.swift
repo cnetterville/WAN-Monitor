@@ -94,8 +94,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2LatencyFormatted: monitor.device2FormattedLatency
         )
         
-        // Try to render SwiftUI view to image with caching
-        if let image = renderSwiftUIViewToImageCached(swiftUIView) {
+        // Try to render SwiftUI view to image with sharp rendering
+        if let image = renderSwiftUIViewToImageSharp(swiftUIView) {
             button.image = image
             button.title = ""
         } else {
@@ -109,6 +109,26 @@ class StatusBarController: NSObject, NSWindowDelegate {
                              monitor.device2DownloadSpeed * 8 / 1_000_000)
             button.title = text
             button.image = nil
+        }
+    }
+    
+    private func renderSwiftUIViewToImageSharp(_ view: StatusBarView) -> NSImage? {
+        // Use SwiftUI's ImageRenderer for better quality
+        if #available(macOS 13.0, *) {
+            let renderer = ImageRenderer(content: view)
+            
+            // Set proper scale for Retina displays
+            renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            
+            // Convert to NSImage
+            guard let cgImage = renderer.cgImage else { return nil }
+            let nsImage = NSImage(cgImage: cgImage, size: cachedTargetSize)
+            nsImage.isTemplate = false
+            
+            return nsImage
+        } else {
+            // Fallback to the enhanced manual rendering for older macOS
+            return renderSwiftUIViewToImageCached(view)
         }
     }
     
@@ -128,10 +148,17 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         hostingController.view.layoutSubtreeIfNeeded()
         
+        // Get the screen's backing scale factor for Retina displays
+        let scaleFactor = NSScreen.main?.backingScaleFactor ?? 2.0
+        let scaledSize = CGSize(
+            width: cachedTargetSize.width * scaleFactor,
+            height: cachedTargetSize.height * scaleFactor
+        )
+        
         guard let bitmapRep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: Int(cachedTargetSize.width),
-            pixelsHigh: Int(cachedTargetSize.height),
+            pixelsWide: Int(scaledSize.width),
+            pixelsHigh: Int(scaledSize.height),
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -146,8 +173,17 @@ class StatusBarController: NSObject, NSWindowDelegate {
         NSGraphicsContext.current = context
         
         let cgContext = context!.cgContext
+        
+        // Scale the context for Retina displays
+        cgContext.scaleBy(x: scaleFactor, y: scaleFactor)
         cgContext.translateBy(x: 0, y: cachedTargetSize.height)
         cgContext.scaleBy(x: 1, y: -1)
+        
+        // Improve text rendering quality
+        cgContext.setShouldAntialias(true)
+        cgContext.setShouldSmoothFonts(true)
+        cgContext.setAllowsAntialiasing(true)
+        cgContext.setAllowsFontSmoothing(true)
         
         hostingController.view.layer?.render(in: cgContext)
         
@@ -348,7 +384,7 @@ struct StatusBarView: View {
             )
             
             Rectangle()
-                .fill(Color.gray)
+                .fill(Color.white)
                 .frame(width: 1, height: 16)
             
             // Device 2
@@ -360,8 +396,8 @@ struct StatusBarView: View {
                 latencyValue: device2Latency
             )
         }
-        .font(.system(size: 9, weight: .regular, design: .monospaced))
-        .foregroundColor(.primary)
+        .font(.system(size: 10, weight: .regular, design: .monospaced))
+        .foregroundColor(.white)
         .padding(.horizontal, 4)
         .frame(height: 22)
     }
@@ -387,10 +423,11 @@ struct ConnectionStatusIcon: View {
                 HStack(spacing: 4) {
                     Text(uploadFormatted.value)
                         .frame(width: speedWidth, alignment: .trailing)
-                        .foregroundColor(.primary)
+                        .foregroundColor(.white)
                     HStack(spacing: 1) {
                         Text(uploadFormatted.unit)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.white)
+                            .fontWeight(.bold)
                         Image(systemName: "arrow.up")
                             .foregroundColor(.red)
                     }
@@ -400,10 +437,11 @@ struct ConnectionStatusIcon: View {
                 HStack(spacing: 4) {
                     Text(downloadFormatted.value)
                         .frame(width: speedWidth, alignment: .trailing)
-                        .foregroundColor(.primary)
+                        .foregroundColor(.white)
                     HStack(spacing: 1) {
                         Text(downloadFormatted.unit)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.white)
+                            .fontWeight(.bold)
                         Image(systemName: "arrow.down")
                             .foregroundColor(.blue)
                     }
@@ -413,12 +451,12 @@ struct ConnectionStatusIcon: View {
             .monospacedDigit()
             
             // MARK: Label Column - Vertical device label and horizontal latency display
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 // Vertical device label text stacked like the original "WAN"
                 VStack(alignment: .center, spacing: -5) {
                     ForEach(Array(label.uppercased()), id: \.self) { char in
                         Text(String(char))
-                            .foregroundColor(.primary)
+                            .foregroundColor(.white)
                     }
                 }
                 .fixedSize()
@@ -438,11 +476,11 @@ struct ConnectionStatusIcon: View {
     
     private func latencyColor(_ latency: Double) -> Color {
         if latency >= 100 {
-            return .red
+            return Color(NSColor.systemRed)
         } else if latency >= 50 {
-            return .orange
+            return Color(NSColor.systemOrange)
         } else {
-            return .green
+            return Color(NSColor.systemGreen)
         }
     }
 }

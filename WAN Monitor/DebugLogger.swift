@@ -9,7 +9,7 @@ import Foundation
 
 struct DebugLogger {
     // Compile-time debug flag - set to false for production
-    nonisolated private static let isDebugEnabled = true
+    nonisolated private static let isDebugEnabled = false
     
     nonisolated static func log(_ message: String, category: String = "DEBUG") {
         #if DEBUG
