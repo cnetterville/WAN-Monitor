@@ -32,6 +32,16 @@ struct SettingsView: View {
                     NavigationLink(destination: StatusView()) {
                         Label("Status", systemImage: "checkmark.circle")
                     }
+                    
+                    NavigationLink(destination: NetworkHistoryView(deviceIndex: 1)) {
+                        Label("\(configuration.device1Label) History", systemImage: "chart.xyaxis.line")
+                    }
+                    
+                    if configuration.device2Enabled {
+                        NavigationLink(destination: NetworkHistoryView(deviceIndex: 2)) {
+                            Label("\(configuration.device2Label) History", systemImage: "chart.xyaxis.line")
+                        }
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)

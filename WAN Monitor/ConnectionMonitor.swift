@@ -491,12 +491,28 @@ class ConnectionMonitor: ObservableObject {
                 self.device1FormattedUploadSpeed = formattedUpload
                 self.device1FormattedDownloadSpeed = formattedDownload
                 self.device1ErrorMessage = nil
+                
+                // Add to history
+                HistoryManager.shared.addDataPoint(
+                    device: 1,
+                    uploadSpeed: upload,
+                    downloadSpeed: download,
+                    latency: self.device1Latency
+                )
             } else {
                 self.device2UploadSpeed = upload
                 self.device2DownloadSpeed = download
                 self.device2FormattedUploadSpeed = formattedUpload
                 self.device2FormattedDownloadSpeed = formattedDownload
                 self.device2ErrorMessage = nil
+                
+                // Add to history
+                HistoryManager.shared.addDataPoint(
+                    device: 2,
+                    uploadSpeed: upload,
+                    downloadSpeed: download,
+                    latency: self.device2Latency
+                )
             }
             
         } catch NetworkDiscoveryError.interfaceNotFound {
