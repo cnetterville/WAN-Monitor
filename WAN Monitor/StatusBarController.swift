@@ -207,9 +207,13 @@ class StatusBarController: NSObject, NSWindowDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         
-        // Show the menu at the status item location
-        if let button = statusItem.button {
-            menu.popUp(positioning: nil, at: CGPoint(x: 0, y: button.bounds.height), in: button)
+        // Use the standard approach: temporarily set the menu
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        
+        // Clear the menu after it's shown to prevent automatic display
+        DispatchQueue.main.async {
+            statusItem.menu = nil
         }
     }
     
