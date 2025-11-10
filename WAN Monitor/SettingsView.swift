@@ -25,6 +25,14 @@ struct SettingsView: View {
         return Int(Double(retentionSeconds) / updateInterval)
     }
     
+    private var estimatedMemoryUsageMB: Int {
+        // Rough estimate: 48 bytes per data point (UUID + Date + 3 Doubles) + overhead
+        // Using conservative 100 bytes per point including array overhead
+        let bytesPerPoint = 100
+        let totalBytes = estimatedDataPoints * bytesPerPoint
+        return totalBytes / (1024 * 1024)
+    }
+    
     var body: some View {
         NavigationSplitView {
             // Sidebar
@@ -207,6 +215,10 @@ struct SettingsView: View {
                             Text("6 hours").tag(360)
                             Text("12 hours").tag(720)
                             Text("24 hours").tag(1440)
+                            Text("3 days").tag(4320)
+                            Text("7 days").tag(10080)
+                            Text("14 days").tag(20160)
+                            Text("30 days").tag(43200)
                         }
                         .labelsHidden()
                         .frame(width: 150)
@@ -215,9 +227,22 @@ struct SettingsView: View {
                         configuration.saveConfiguration()
                     }
                     
-                    Text("Approximate data points: \(estimatedDataPoints)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Approximate data points: \(estimatedDataPoints)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        
+                        if estimatedMemoryUsageMB > 100 {
+                            HStack(spacing: 4) {
+                                Image(systemName: "info.circle.fill")
+                                    .foregroundStyle(.orange)
+                                    .font(.caption2)
+                                Text("Estimated memory usage: ~\(estimatedMemoryUsageMB) MB per device")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                     
                     Divider()
                     
