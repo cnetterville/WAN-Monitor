@@ -8,17 +8,48 @@
 import SwiftUI
 import Charts
 
+enum HistoryTimeRange: String, CaseIterable {
+    case hour1 = "Last Hour"
+    case hours6 = "Last 6 Hours"
+    case hours24 = "Last 24 Hours"
+    case days7 = "Last 7 Days"
+    case days30 = "Last 30 Days"
+    case all = "All Time"
+    
+    var timeInterval: TimeInterval? {
+        switch self {
+        case .hour1: return 3600
+        case .hours6: return 3600 * 6
+        case .hours24: return 3600 * 24
+        case .days7: return 3600 * 24 * 7
+        case .days30: return 3600 * 24 * 30
+        case .all: return nil
+        }
+    }
+}
+
 struct NetworkHistoryView: View {
     @ObservedObject var historyManager = HistoryManager.shared
     @ObservedObject var configuration = NetworkConfiguration.shared
     let deviceIndex: Int
     
-    private var history: [NetworkDataPoint] {
+    @State private var selectedTimeRange: HistoryTimeRange = .hours24
+    
+    private var allHistory: [NetworkDataPoint] {
         deviceIndex == 1 ? historyManager.device1History : historyManager.device2History
     }
     
+    private var history: [NetworkDataPoint] {
+        guard let timeInterval = selectedTimeRange.timeInterval else {
+            return allHistory
+        }
+        
+        let cutoffDate = Date().addingTimeInterval(-timeInterval)
+        return allHistory.filter { $0.timestamp >= cutoffDate }
+    }
+    
     private var statistics: NetworkStatistics {
-        historyManager.getStatistics(device: deviceIndex)
+        historyManager.getStatistics(device: deviceIndex, filteredHistory: history)
     }
     
     private var deviceLabel: String {
@@ -28,13 +59,41 @@ struct NetworkHistoryView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                if history.isEmpty {
+                if allHistory.isEmpty {
                     ContentUnavailableView(
                         "No History Data",
                         systemImage: "chart.line.uptrend.xyaxis",
                         description: Text("Start monitoring to collect network history")
                     )
                 } else {
+                    // Time Range Selector
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Time Range")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary)
+                        
+                        Picker("Time Range", selection: $selectedTimeRange) {
+                            ForEach(HistoryTimeRange.allCases, id: \.self) { range in
+                                Text(range.rawValue).tag(range)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        
+                        if history.count < allHistory.count {
+                            HStack(spacing: 4) {
+                                Image(systemName: "info.circle.fill")
+                                    .foregroundStyle(.blue)
+                                    .font(.caption)
+                                Text("Showing \(history.count) of \(allHistory.count) data points")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    
                     // Statistics Cards
                     StatisticsCardsView(statistics: statistics, deviceLabel: deviceLabel)
                     

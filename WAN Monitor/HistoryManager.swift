@@ -105,8 +105,8 @@ class HistoryManager: ObservableObject {
     
     // MARK: - Statistics
     
-    func getStatistics(device: Int) -> NetworkStatistics {
-        let history = device == 1 ? device1History : device2History
+    func getStatistics(device: Int, filteredHistory: [NetworkDataPoint]? = nil) -> NetworkStatistics {
+        let history = filteredHistory ?? (device == 1 ? device1History : device2History)
         
         guard !history.isEmpty else {
             return NetworkStatistics()
