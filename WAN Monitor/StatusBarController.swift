@@ -12,7 +12,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var cachedHostingController: NSHostingController<StatusBarView>?
     private var cachedTargetSize = CGSize(width: 320, height: 22)
     private var lastRenderTime = Date.distantPast
-    private let minRenderInterval: TimeInterval = 0.5 // Limit rendering to 2 FPS max
+    private let minRenderInterval: TimeInterval = 0.1 // Reduced from 0.5 to allow faster updates
 
     override init() {
         self.monitor = ConnectionMonitor()
@@ -53,9 +53,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     private func setupMonitorObservers() {
-        // Observe monitor changes and update display with throttling
+        // Observe monitor changes and update display with less aggressive throttling
         monitor.objectWillChange
-            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main) // Throttle updates
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main) // Reduced from 500ms to 100ms
             .sink { [weak self] _ in
                 self?.updateDisplay()
             }
@@ -63,7 +63,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Observe configuration changes and update display
         NetworkConfiguration.shared.objectWillChange
-            .debounce(for: .milliseconds(200), scheduler: DispatchQueue.main)
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main) // Reduced from 200ms to 100ms
             .sink { [weak self] _ in
                 // Clear cached controller when config changes
                 self?.cachedHostingController = nil
@@ -76,142 +76,74 @@ class StatusBarController: NSObject, NSWindowDelegate {
         guard let statusItem = statusItem else { return }
         guard let button = statusItem.button else { return }
         
-        // Throttle rendering
+        // More responsive throttling based on update interval
         let now = Date()
-        guard now.timeIntervalSince(lastRenderTime) >= minRenderInterval else {
+        let config = NetworkConfiguration.shared
+        let dynamicRenderInterval = max(0.1, min(config.updateInterval * 0.2, 0.5)) // Scale with user's interval
+        guard now.timeIntervalSince(lastRenderTime) >= dynamicRenderInterval else {
             return
         }
         lastRenderTime = now
         
-        let config = NetworkConfiguration.shared
-        
-        // Create SwiftUI view using real data from enabled devices
-        let swiftUIView = StatusBarView(
+        // Create SwiftUI view
+        let statusBarView = StatusBarView(
             device1Label: config.device1Label,
             device1Up: monitor.device1UploadSpeed,
             device1Down: monitor.device1DownloadSpeed,
-            device1Latency: monitor.device1Latency ?? 0.0,
+            device1Latency: monitor.device1Latency ?? 0,
             device1UpFormatted: monitor.device1FormattedUploadSpeed,
             device1DownFormatted: monitor.device1FormattedDownloadSpeed,
             device1LatencyFormatted: monitor.device1FormattedLatency,
-            
             device2Label: config.device2Label,
             device2Up: monitor.device2UploadSpeed,
             device2Down: monitor.device2DownloadSpeed,
-            device2Latency: monitor.device2Latency ?? 0.0,
+            device2Latency: monitor.device2Latency ?? 0,
             device2UpFormatted: monitor.device2FormattedUploadSpeed,
             device2DownFormatted: monitor.device2FormattedDownloadSpeed,
             device2LatencyFormatted: monitor.device2FormattedLatency,
-            
             device2Enabled: config.device2Enabled
         )
         
-        // Try to render SwiftUI view to image with sharp rendering
-        if let image = renderSwiftUIViewToImageSharp(swiftUIView) {
-            button.image = image
-            button.title = ""
-        } else {
-            // Fallback to simple text for enabled devices
-            if config.device2Enabled {
-                let text = String(format: "%@ %.0f↑%.0f↓ %@ %.0f↑%.0f↓",
-                                 config.device1Label,
-                                 monitor.device1UploadSpeed * 8 / 1_000_000,
-                                 monitor.device1DownloadSpeed * 8 / 1_000_000,
-                                 config.device2Label,
-                                 monitor.device2UploadSpeed * 8 / 1_000_000,
-                                 monitor.device2DownloadSpeed * 8 / 1_000_000)
-                button.title = text
-            } else {
-                let text = String(format: "%@ %.0f↑%.0f↓",
-                                 config.device1Label,
-                                 monitor.device1UploadSpeed * 8 / 1_000_000,
-                                 monitor.device1DownloadSpeed * 8 / 1_000_000)
-                button.title = text
-            }
-            button.image = nil
-        }
+        // Render SwiftUI view to image for the button
+        let image = renderSwiftUIToImage(statusBarView)
+        
+        // Set the image on the button
+        button.image = image
+        button.title = ""
+        button.imagePosition = .imageOnly
+        
+        // Add error state coloring if needed
+        let hasErrors = monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil)
+        button.appearsDisabled = hasErrors
     }
+
+    // MARK: - SwiftUI to Image Rendering
     
-    private func renderSwiftUIViewToImageSharp(_ view: StatusBarView) -> NSImage? {
-        // Use SwiftUI's ImageRenderer for better quality
-        if #available(macOS 13.0, *) {
-            let renderer = ImageRenderer(content: view)
-            
-            // Set proper scale for Retina displays
-            renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            
-            // Convert to NSImage
-            guard let cgImage = renderer.cgImage else { return nil }
-            let nsImage = NSImage(cgImage: cgImage, size: cachedTargetSize)
-            nsImage.isTemplate = false
-            
-            return nsImage
-        } else {
-            // Fallback to the enhanced manual rendering for older macOS
-            return renderSwiftUIViewToImageCached(view)
-        }
-    }
-    
-    private func renderSwiftUIViewToImageCached(_ view: StatusBarView) -> NSImage? {
-        // Reuse the hosting controller if possible
-        if cachedHostingController == nil {
-            cachedHostingController = NSHostingController(rootView: view)
-            
-            cachedHostingController?.view.frame = CGRect(origin: .zero, size: cachedTargetSize)
-            cachedHostingController?.view.wantsLayer = true
-        } else {
-            // Update the existing hosting controller's root view
-            cachedHostingController?.rootView = view
-        }
-        
-        guard let hostingController = cachedHostingController else { return nil }
-        
-        hostingController.view.layoutSubtreeIfNeeded()
-        
-        // Get the screen's backing scale factor for Retina displays
-        let scaleFactor = NSScreen.main?.backingScaleFactor ?? 2.0
-        let scaledSize = CGSize(
-            width: cachedTargetSize.width * scaleFactor,
-            height: cachedTargetSize.height * scaleFactor
+    private func renderSwiftUIToImage<Content: View>(_ content: Content) -> NSImage {
+        let targetSize = CGSize(
+            width: NetworkConfiguration.shared.device2Enabled ? 300 : 150, 
+            height: 22
         )
         
-        guard let bitmapRep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(scaledSize.width),
-            pixelsHigh: Int(scaledSize.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else { return nil }
+        // Create hosting view
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.frame = CGRect(origin: .zero, size: targetSize)
         
-        let context = NSGraphicsContext(bitmapImageRep: bitmapRep)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
+        // Force layout
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
         
-        let cgContext = context!.cgContext
+        // Create image representation
+        guard let bitmapRep = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
+            return NSImage(size: targetSize)
+        }
         
-        // Scale the context for Retina displays
-        cgContext.scaleBy(x: scaleFactor, y: scaleFactor)
-        cgContext.translateBy(x: 0, y: cachedTargetSize.height)
-        cgContext.scaleBy(x: 1, y: -1)
+        // Cache the display
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmapRep)
         
-        // Improve text rendering quality
-        cgContext.setShouldAntialias(true)
-        cgContext.setShouldSmoothFonts(true)
-        cgContext.setAllowsAntialiasing(true)
-        cgContext.setAllowsFontSmoothing(true)
-        
-        hostingController.view.layer?.render(in: cgContext)
-        
-        NSGraphicsContext.restoreGraphicsState()
-        
-        let image = NSImage(size: cachedTargetSize)
+        // Create and return the image
+        let image = NSImage(size: targetSize)
         image.addRepresentation(bitmapRep)
-        image.isTemplate = false
         
         return image
     }
@@ -226,42 +158,44 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Show real data in menu for enabled devices
         if monitor.isMonitoring {
-            // Device 1 info
-            let device1Item = NSMenuItem(title: String(format: "%@: ↓%@%@ ↑%@%@ (%@)", 
-                                                config.device1Label,
-                                                monitor.device1FormattedDownloadSpeed.value,
-                                                monitor.device1FormattedDownloadSpeed.unit,
-                                                monitor.device1FormattedUploadSpeed.value,
-                                                monitor.device1FormattedUploadSpeed.unit,
-                                                monitor.device1FormattedLatency == "-" ? "- ms" : "\(monitor.device1FormattedLatency) ms"), 
-                                  action: nil, keyEquivalent: "")
+            // Device 1 info with enhanced status
+            let device1Status = getDeviceStatusText(
+                label: config.device1Label,
+                uploadSpeed: monitor.device1FormattedUploadSpeed,
+                downloadSpeed: monitor.device1FormattedDownloadSpeed,
+                latency: monitor.device1FormattedLatency,
+                error: monitor.device1ErrorMessage
+            )
+            let device1Item = NSMenuItem(title: device1Status.text, action: nil, keyEquivalent: "")
+            if let color = device1Status.color {
+                device1Item.attributedTitle = NSAttributedString(string: device1Status.text, attributes: [.foregroundColor: color])
+            }
             menu.addItem(device1Item)
             
             // Device 2 info - only if enabled
             if config.device2Enabled {
-                let device2Item = NSMenuItem(title: String(format: "%@: ↓%@%@ ↑%@%@ (%@)", 
-                                                    config.device2Label,
-                                                    monitor.device2FormattedDownloadSpeed.value,
-                                                    monitor.device2FormattedDownloadSpeed.unit,
-                                                    monitor.device2FormattedUploadSpeed.value,
-                                                    monitor.device2FormattedUploadSpeed.unit,
-                                                    monitor.device2FormattedLatency == "-" ? "- ms" : "\(monitor.device2FormattedLatency) ms"), 
-                                      action: nil, keyEquivalent: "")
+                let device2Status = getDeviceStatusText(
+                    label: config.device2Label,
+                    uploadSpeed: monitor.device2FormattedUploadSpeed,
+                    downloadSpeed: monitor.device2FormattedDownloadSpeed,
+                    latency: monitor.device2FormattedLatency,
+                    error: monitor.device2ErrorMessage
+                )
+                let device2Item = NSMenuItem(title: device2Status.text, action: nil, keyEquivalent: "")
+                if let color = device2Status.color {
+                    device2Item.attributedTitle = NSAttributedString(string: device2Status.text, attributes: [.foregroundColor: color])
+                }
                 menu.addItem(device2Item)
             }
             
-            // Show errors if any
-            if let error1 = monitor.device1ErrorMessage {
-                let errorItem = NSMenuItem(title: "\(config.device1Label) Error: \(error1)", action: nil, keyEquivalent: "")
-                errorItem.attributedTitle = NSAttributedString(string: "\(config.device1Label) Error: \(error1)", attributes: [.foregroundColor: NSColor.red])
-                menu.addItem(errorItem)
+            // Add troubleshooting options if there are errors
+            if monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil) {
+                menu.addItem(NSMenuItem.separator())
+                let troubleshootItem = NSMenuItem(title: "Troubleshoot Connection Issues...", action: #selector(showTroubleshooting), keyEquivalent: "")
+                troubleshootItem.target = self
+                menu.addItem(troubleshootItem)
             }
             
-            if config.device2Enabled, let error2 = monitor.device2ErrorMessage {
-                let errorItem = NSMenuItem(title: "\(config.device2Label) Error: \(error2)", action: nil, keyEquivalent: "")
-                errorItem.attributedTitle = NSAttributedString(string: "\(config.device2Label) Error: \(error2)", attributes: [.foregroundColor: NSColor.red])
-                menu.addItem(errorItem)
-            }
         } else {
             menu.addItem(NSMenuItem(title: "Not monitoring", action: nil, keyEquivalent: ""))
         }
@@ -273,6 +207,13 @@ class StatusBarController: NSObject, NSWindowDelegate {
         let startStopItem = NSMenuItem(title: startStopTitle, action: #selector(toggleMonitoring), keyEquivalent: "")
         startStopItem.target = self
         menu.addItem(startStopItem)
+        
+        // Add refresh interfaces option
+        if monitor.isMonitoring {
+            let refreshItem = NSMenuItem(title: "Refresh Interfaces", action: #selector(refreshInterfaces), keyEquivalent: "r")
+            refreshItem.target = self
+            menu.addItem(refreshItem)
+        }
         
         menu.addItem(NSMenuItem.separator())
         
@@ -288,6 +229,83 @@ class StatusBarController: NSObject, NSWindowDelegate {
         // Show the menu at the status item location
         if let button = statusItem.button {
             menu.popUp(positioning: nil, at: CGPoint(x: 0, y: button.bounds.height), in: button)
+        }
+    }
+    
+    private func getDeviceStatusText(
+        label: String,
+        uploadSpeed: (value: String, unit: String),
+        downloadSpeed: (value: String, unit: String),
+        latency: String,
+        error: String?
+    ) -> (text: String, color: NSColor?) {
+        
+        if let error = error {
+            if error.contains("backing off") || error.contains("temporarily unreachable") {
+                return ("\(label): Temporarily unavailable (auto-retry in progress)", .systemOrange)
+            } else if error.contains("Interface") {
+                return ("\(label): Interface configuration needed", .systemYellow)
+            } else {
+                return ("\(label): \(error)", .systemRed)
+            }
+        }
+        
+        let statusText = String(format: "%@: ↓%@ %@ ↑%@ %@ (%@ ms)",
+                               label,
+                               downloadSpeed.value, downloadSpeed.unit,
+                               uploadSpeed.value, uploadSpeed.unit,
+                               latency == "-" ? "-" : latency)
+        
+        // Color code based on latency
+        if latency != "-", let latencyValue = Double(latency) {
+            if latencyValue > 100 {
+                return (statusText, .systemRed)
+            } else if latencyValue > 50 {
+                return (statusText, .systemOrange)
+            } else {
+                return (statusText, .systemGreen)
+            }
+        }
+        
+        return (statusText, nil)
+    }
+    
+    @objc private func showTroubleshooting() {
+        let alert = NSAlert()
+        alert.messageText = "Connection Troubleshooting"
+        alert.informativeText = """
+        Common solutions for connection issues:
+        
+        • Check device IP addresses in Settings
+        • Verify SNMP is enabled on network devices
+        • Ensure community string is correct (usually "public")
+        • Check network connectivity to devices
+        • Verify SNMP port (default: 161)
+        • Try refreshing interfaces if auto-detection failed
+        
+        For persistent issues, check Console app for detailed logs.
+        """
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Refresh Interfaces")
+        alert.addButton(withTitle: "OK")
+        
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            showSettings()
+        case .alertSecondButtonReturn:
+            refreshInterfaces()
+        default:
+            break
+        }
+    }
+    
+    @objc private func refreshInterfaces() {
+        Task { @MainActor in
+            await monitor.discoverInterfaces(for: 1)
+            if NetworkConfiguration.shared.device2Enabled {
+                await monitor.discoverInterfaces(for: 2)
+            }
         }
     }
     

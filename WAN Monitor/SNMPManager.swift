@@ -17,7 +17,7 @@ actor SNMPManager {
     
     // Rate limiting with adaptive behavior
     private var lastRequestTime = Date(timeIntervalSince1970: 0)
-    private var minRequestInterval: TimeInterval = 0.5 // Start with 500ms
+    private var minRequestInterval: TimeInterval = 0.2 // Reduced from 0.5 to 0.2 for faster response
     private var adaptiveDelay: TimeInterval = 0.0
     private let maxAdaptiveDelay: TimeInterval = 5.0
     
@@ -33,14 +33,14 @@ actor SNMPManager {
     
     // MARK: - Public Interface
     
-    func performSnmpWalk(host: String, community: String, oid: String, taskId: UUID = UUID()) async throws -> [Int: String] {
-        try await rateLimitedOperation(taskId: taskId, host: host) {
+    func performSnmpWalk(host: String, community: String, oid: String, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> [Int: String] {
+        try await rateLimitedOperation(taskId: taskId, host: host, updateInterval: updateInterval) {
             try await self.shellSnmpWalk(host: host, community: community, oid: oid, taskId: taskId)
         }
     }
     
-    func performSnmpGet(host: String, community: String, oid: String, taskId: UUID = UUID()) async throws -> UInt64 {
-        try await rateLimitedOperation(taskId: taskId, host: host) {
+    func performSnmpGet(host: String, community: String, oid: String, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> UInt64 {
+        try await rateLimitedOperation(taskId: taskId, host: host, updateInterval: updateInterval) {
             try await self.shellSnmpGet(host: host, community: community, oid: oid, taskId: taskId)
         }
     }
@@ -73,9 +73,10 @@ actor SNMPManager {
     
     // MARK: - Private Implementation with Adaptive Behavior
     
-    private func rateLimitedOperation<T>(taskId: UUID, host: String, operation: @escaping () async throws -> T) async throws -> T {
-        // Adaptive rate limiting based on recent failures
-        let currentInterval = minRequestInterval + adaptiveDelay
+    private func rateLimitedOperation<T>(taskId: UUID, host: String, updateInterval: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+        // Adaptive rate limiting based on recent failures and user preference
+        let baseInterval = max(0.1, min(minRequestInterval, updateInterval * 0.2))
+        let currentInterval = baseInterval + adaptiveDelay
         let now = Date()
         let timeSinceLastRequest = now.timeIntervalSince(lastRequestTime)
         

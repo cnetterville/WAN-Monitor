@@ -222,4 +222,72 @@ class NetworkConfiguration: ObservableObject {
             startAtLogin = actualStatus
         }
     }
+    
+    // MARK: - Validation Methods
+    
+    func validateDevice1Configuration() -> [String] {
+        var errors: [String] = []
+        
+        if device1Host.isEmpty {
+            errors.append("Device 1 IP address is required")
+        } else if !isValidIPAddress(device1Host) {
+            errors.append("Device 1 IP address format is invalid")
+        }
+        
+        if device1Community.isEmpty {
+            errors.append("Device 1 SNMP community string is required")
+        }
+        
+        if device1Port < 1 || device1Port > 65535 {
+            errors.append("Device 1 SNMP port must be between 1 and 65535")
+        }
+        
+        if device1Label.isEmpty {
+            errors.append("Device 1 label is required")
+        }
+        
+        return errors
+    }
+    
+    func validateDevice2Configuration() -> [String] {
+        guard device2Enabled else { return [] }
+        
+        var errors: [String] = []
+        
+        if device2Host.isEmpty {
+            errors.append("Device 2 IP address is required")
+        } else if !isValidIPAddress(device2Host) {
+            errors.append("Device 2 IP address format is invalid")
+        }
+        
+        if device2Community.isEmpty {
+            errors.append("Device 2 SNMP community string is required")
+        }
+        
+        if device2Port < 1 || device2Port > 65535 {
+            errors.append("Device 2 SNMP port must be between 1 and 65535")
+        }
+        
+        if device2Label.isEmpty {
+            errors.append("Device 2 label is required")
+        }
+        
+        return errors
+    }
+    
+    private func isValidIPAddress(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".")
+        guard parts.count == 4 else { return false }
+        
+        for part in parts {
+            guard let num = Int(part), num >= 0 && num <= 255 else {
+                return false
+            }
+        }
+        return true
+    }
+    
+    func getAllValidationErrors() -> [String] {
+        return validateDevice1Configuration() + validateDevice2Configuration()
+    }
 }

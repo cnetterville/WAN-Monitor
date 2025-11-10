@@ -257,8 +257,8 @@ class ConnectionMonitor: ObservableObject {
         }
         
         do {
-            // Use the centralized SNMP manager instead of direct Task.detached
-            let interfaces = try await monitor.discoverInterfaces(using: SNMPManager.shared, taskId: taskId)
+            // Use the centralized SNMP manager and pass update interval
+            let interfaces = try await monitor.discoverInterfaces(using: SNMPManager.shared, updateInterval: configuration.updateInterval, taskId: taskId)
             
             DebugLogger.logNetwork("Discovery successful for device \(deviceIndex), updating UI with \(interfaces.count) interfaces")
             
@@ -359,8 +359,8 @@ class ConnectionMonitor: ObservableObject {
     // MARK: - Resilient Consolidated Monitoring
     
     private func startConsolidatedMonitoring() {
-        // Use a safer interval and consolidate all monitoring into one timer
-        let saferInterval = max(configuration.updateInterval, 5.0) // Minimum 5 seconds
+        // Respect user's update interval with a reasonable minimum of 1 second
+        let saferInterval = max(configuration.updateInterval, 1.0) // Changed from 5.0 to 1.0
         
         consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -403,8 +403,9 @@ class ConnectionMonitor: ObservableObject {
         
         // Only update device 2 if it's enabled
         if configuration.device2Enabled {
-            // Add delay between device updates - use try? to ignore cancellation
-            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+            // Reduce delay between device updates for faster response
+            let deviceDelay = max(0.2, configuration.updateInterval * 0.1) // Scale delay with update interval
+            try? await Task.sleep(nanoseconds: UInt64(deviceDelay * 1_000_000_000))
             
             let taskId2 = UUID()
             activeMonitoringTasks.append(taskId2)
@@ -427,7 +428,8 @@ class ConnectionMonitor: ObservableObject {
             // Use centralized SNMP manager with proper task management
             let (upload, download, formattedUpload, formattedDownload) = try await monitor.updateTrafficData(
                 availableInterfaces: availableInterfaces, 
-                using: SNMPManager.shared, 
+                using: SNMPManager.shared,
+                updateInterval: configuration.updateInterval,
                 taskId: taskId
             )
             

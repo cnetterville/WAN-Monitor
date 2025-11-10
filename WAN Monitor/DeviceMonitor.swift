@@ -236,13 +236,13 @@ final class DeviceMonitor: Sendable {
     
     // MARK: - Optimized Interface Discovery using SNMPManager
     
-    func discoverInterfaces(using snmpManager: SNMPManager = SNMPManager.shared, taskId: UUID = UUID()) async throws -> [NetworkInterface] {
+    func discoverInterfaces(using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> [NetworkInterface] {
         DebugLogger.logNetwork("===== Starting interface discovery for \(label) =====")
         
         // Use centralized SNMP manager with rate limiting
-        let ifNames = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.31.1.1.1.1", taskId: taskId)
-        let ifDescr = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.2", taskId: taskId)
-        let ifOperStatus = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.8", taskId: taskId)
+        let ifNames = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.31.1.1.1.1", updateInterval: updateInterval, taskId: taskId)
+        let ifDescr = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.2", updateInterval: updateInterval, taskId: taskId)
+        let ifOperStatus = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.8", updateInterval: updateInterval, taskId: taskId)
         
         var interfaces: [NetworkInterface] = []
         
@@ -317,7 +317,7 @@ final class DeviceMonitor: Sendable {
     
     // MARK: - Optimized Traffic Data Update with Circuit Breaker
     
-    func updateTrafficData(availableInterfaces: [NetworkInterface], using snmpManager: SNMPManager = SNMPManager.shared, taskId: UUID = UUID()) async throws -> (upload: Double, download: Double, formattedUpload: (String, String), formattedDownload: (String, String)) {
+    func updateTrafficData(availableInterfaces: [NetworkInterface], using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> (upload: Double, download: Double, formattedUpload: (String, String), formattedDownload: (String, String)) {
         
         // Check circuit breaker before attempting request
         var currentCircuitBreaker = circuitBreaker
@@ -370,8 +370,8 @@ final class DeviceMonitor: Sendable {
         
         do {
             // Use centralized SNMP manager
-            let currentInOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: inOid, taskId: taskId)
-            let currentOutOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: outOid, taskId: taskId)
+            let currentInOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: inOid, updateInterval: updateInterval, taskId: taskId)
+            let currentOutOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: outOid, updateInterval: updateInterval, taskId: taskId)
             
             let now = Date()
             
