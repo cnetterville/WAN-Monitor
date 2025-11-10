@@ -32,9 +32,18 @@ class HistoryManager: ObservableObject {
     @Published var device1History: [NetworkDataPoint] = []
     @Published var device2History: [NetworkDataPoint] = []
     
-    // Configuration
-    private let maxDataPoints = 300 // 5 minutes at 1 second intervals, or 10 minutes at 2 second intervals
-    private let persistenceEnabled = true
+    // Configuration - dynamically calculated based on user settings
+    private var maxDataPoints: Int {
+        let config = NetworkConfiguration.shared
+        let updateInterval = config.updateInterval
+        let retentionSeconds = config.historyRetentionMinutes * 60
+        return max(60, Int(Double(retentionSeconds) / updateInterval)) // Minimum 60 points
+    }
+    
+    private var persistenceEnabled: Bool {
+        NetworkConfiguration.shared.historySaveOnQuit
+    }
+    
     private let persistenceURL: URL
     
     private init() {
@@ -143,7 +152,13 @@ class HistoryManager: ObservableObject {
     }
     
     private func loadHistory() {
-        guard persistenceEnabled else { return }
+        let config = NetworkConfiguration.shared
+        
+        guard config.historyLoadOnStartup else {
+            DebugLogger.logConfig("History loading disabled by user preference")
+            return
+        }
+        
         guard FileManager.default.fileExists(atPath: persistenceURL.path) else { return }
         
         do {
@@ -155,12 +170,13 @@ class HistoryManager: ObservableObject {
             device1History = data.device1History
             device2History = data.device2History
             
-            // Trim old data if needed
-            let cutoffDate = Date().addingTimeInterval(-3600) // Keep last hour only on startup
+            // Trim old data based on user preference
+            let cutoffHours = config.historyRetentionHoursOnStartup
+            let cutoffDate = Date().addingTimeInterval(-Double(cutoffHours) * 3600)
             device1History.removeAll { $0.timestamp < cutoffDate }
             device2History.removeAll { $0.timestamp < cutoffDate }
             
-            DebugLogger.logConfig("Loaded history: Device 1: \(device1History.count) points, Device 2: \(device2History.count) points")
+            DebugLogger.logConfig("Loaded history (keeping last \(cutoffHours)h): Device 1: \(device1History.count) points, Device 2: \(device2History.count) points")
         } catch {
             DebugLogger.logError("Failed to load history", error: error)
         }

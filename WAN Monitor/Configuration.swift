@@ -72,6 +72,12 @@ class NetworkConfiguration: ObservableObject {
         }
     }
     
+    // History settings
+    @Published var historyRetentionMinutes: Int = 30 // How many minutes of history to keep in memory
+    @Published var historySaveOnQuit: Bool = true // Whether to save history when quitting
+    @Published var historyLoadOnStartup: Bool = true // Whether to load history on startup
+    @Published var historyRetentionHoursOnStartup: Int = 24 // How many hours of old history to keep when loading
+    
     private init() {
         // Load configuration synchronously to avoid race conditions
         loadConfiguration()
@@ -122,6 +128,12 @@ class NetworkConfiguration: ObservableObject {
         
         // Start at login
         defaults.set(startAtLogin, forKey: "startAtLogin")
+        
+        // History settings
+        defaults.set(historyRetentionMinutes, forKey: "historyRetentionMinutes")
+        defaults.set(historySaveOnQuit, forKey: "historySaveOnQuit")
+        defaults.set(historyLoadOnStartup, forKey: "historyLoadOnStartup")
+        defaults.set(historyRetentionHoursOnStartup, forKey: "historyRetentionHoursOnStartup")
     }
     
     private func loadConfiguration() {
@@ -242,6 +254,20 @@ class NetworkConfiguration: ObservableObject {
         // Start at login - defaults to false for opt-in behavior
         if defaults.object(forKey: "startAtLogin") != nil {
             startAtLogin = defaults.bool(forKey: "startAtLogin")
+        }
+        
+        // History settings
+        if defaults.object(forKey: "historyRetentionMinutes") != nil {
+            historyRetentionMinutes = defaults.integer(forKey: "historyRetentionMinutes")
+        }
+        if defaults.object(forKey: "historySaveOnQuit") != nil {
+            historySaveOnQuit = defaults.bool(forKey: "historySaveOnQuit")
+        }
+        if defaults.object(forKey: "historyLoadOnStartup") != nil {
+            historyLoadOnStartup = defaults.bool(forKey: "historyLoadOnStartup")
+        }
+        if defaults.object(forKey: "historyRetentionHoursOnStartup") != nil {
+            historyRetentionHoursOnStartup = defaults.integer(forKey: "historyRetentionHoursOnStartup")
         }
         
         // Sync with actual login item status on startup

@@ -16,6 +16,15 @@ struct SettingsView: View {
     @State private var showingDevice2InterfaceDiscovery = false
     @State private var interfaceDiscoveryWindow: NSWindow?
     
+    @State private var showAdvancedSettings = false
+    @State private var showClearHistoryConfirmation = false
+    
+    private var estimatedDataPoints: Int {
+        let retentionSeconds = configuration.historyRetentionMinutes * 60
+        let updateInterval = configuration.updateInterval
+        return Int(Double(retentionSeconds) / updateInterval)
+    }
+    
     var body: some View {
         NavigationSplitView {
             // Sidebar
@@ -172,11 +181,104 @@ struct SettingsView: View {
             }
             
             Section("Startup Behavior") {
-                Toggle("Start monitoring automatically", isOn: $configuration.autoStartMonitoring)
-                    .help("When enabled, monitoring will start automatically when the app launches")
+                Toggle("Start monitoring automatically on launch", isOn: $configuration.autoStartMonitoring)
+                    .onChange(of: configuration.autoStartMonitoring) { _, _ in
+                        configuration.saveConfiguration()
+                    }
                 
-                Toggle("Launch at login", isOn: $configuration.startAtLogin)
-                    .help("When enabled, WAN Monitor will start automatically when you log in to your Mac")
+                Toggle("Start app at login", isOn: $configuration.startAtLogin)
+                    .onChange(of: configuration.startAtLogin) { _, _ in
+                        configuration.saveConfiguration()
+                    }
+            }
+            
+            // MARK: - History Settings
+            GroupBox(label: Label("History", systemImage: "clock.arrow.circlepath")) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Keep history for:")
+                        Picker("", selection: $configuration.historyRetentionMinutes) {
+                            Text("5 minutes").tag(5)
+                            Text("10 minutes").tag(10)
+                            Text("15 minutes").tag(15)
+                            Text("30 minutes").tag(30)
+                            Text("1 hour").tag(60)
+                            Text("2 hours").tag(120)
+                            Text("6 hours").tag(360)
+                            Text("12 hours").tag(720)
+                            Text("24 hours").tag(1440)
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+                    }
+                    .onChange(of: configuration.historyRetentionMinutes) { _, _ in
+                        configuration.saveConfiguration()
+                    }
+                    
+                    Text("Approximate data points: \(estimatedDataPoints)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Divider()
+                    
+                    Toggle("Save history when quitting app", isOn: $configuration.historySaveOnQuit)
+                        .onChange(of: configuration.historySaveOnQuit) { _, _ in
+                            configuration.saveConfiguration()
+                        }
+                    
+                    Toggle("Load history on startup", isOn: $configuration.historyLoadOnStartup)
+                        .onChange(of: configuration.historyLoadOnStartup) { _, _ in
+                            configuration.saveConfiguration()
+                        }
+                    
+                    if configuration.historyLoadOnStartup {
+                        HStack {
+                            Text("Keep history older than:")
+                            Picker("", selection: $configuration.historyRetentionHoursOnStartup) {
+                                Text("1 hour").tag(1)
+                                Text("6 hours").tag(6)
+                                Text("12 hours").tag(12)
+                                Text("24 hours").tag(24)
+                                Text("3 days").tag(72)
+                                Text("1 week").tag(168)
+                            }
+                            .labelsHidden()
+                            .frame(width: 150)
+                        }
+                        .onChange(of: configuration.historyRetentionHoursOnStartup) { _, _ in
+                            configuration.saveConfiguration()
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    HStack {
+                        Button(role: .destructive) {
+                            showClearHistoryConfirmation = true
+                        } label: {
+                            Label("Clear All History", systemImage: "trash")
+                        }
+                        .confirmationDialog(
+                            "Clear all history data?",
+                            isPresented: $showClearHistoryConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Clear Device 1 History", role: .destructive) {
+                                HistoryManager.shared.clearHistory(device: 1)
+                            }
+                            Button("Clear Device 2 History", role: .destructive) {
+                                HistoryManager.shared.clearHistory(device: 2)
+                            }
+                            Button("Clear All History", role: .destructive) {
+                                HistoryManager.shared.clearHistory()
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        }
+                        
+                        Spacer()
+                    }
+                }
+                .padding(8)
             }
             
             Section("Network Testing") {
