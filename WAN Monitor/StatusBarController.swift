@@ -94,9 +94,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     private func setupMonitorObservers() {
-        // Observe monitor changes and update display with throttling
+        // Observe monitor changes and update display - remove throttling for faster updates
         monitor.objectWillChange
-            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.updateDisplay()
             }
@@ -112,19 +111,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 
     private func updateDisplay() {
-        // Throttle updates
-        let now = Date()
-        let config = NetworkConfiguration.shared
-        let dynamicUpdateInterval = max(0.1, min(config.updateInterval * 0.2, 0.5))
-        guard now.timeIntervalSince(lastUpdateTime) >= dynamicUpdateInterval else {
-            return
-        }
-        lastUpdateTime = now
-        
+        // Remove throttling - update immediately when data changes
         // Just update the hosted view - no image conversion needed!
         setupHostedView()
         
         // Update button appearance for error states
+        let config = NetworkConfiguration.shared
         let hasErrors = monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil)
         statusItem?.button?.appearsDisabled = hasErrors
     }

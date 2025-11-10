@@ -20,9 +20,9 @@ actor SNMPManager {
     
     // Rate limiting with adaptive behavior
     private var lastRequestTime = Date(timeIntervalSince1970: 0)
-    private var minRequestInterval: TimeInterval = 0.2 // Reduced from 0.5 to 0.2 for faster response
+    private var minRequestInterval: TimeInterval = 0.05 // Reduced from 0.2 to 0.05 for faster response
     private var adaptiveDelay: TimeInterval = 0.0
-    private let maxAdaptiveDelay: TimeInterval = 5.0
+    private let maxAdaptiveDelay: TimeInterval = 2.0 // Reduced from 5.0 to 2.0
     
     // Task management
     private var activeTasks: Set<UUID> = []
@@ -98,8 +98,8 @@ actor SNMPManager {
     // MARK: - Private Implementation with Adaptive Behavior
     
     private func rateLimitedOperation<T>(taskId: UUID, host: String, updateInterval: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
-        // Adaptive rate limiting based on recent failures and user preference
-        let baseInterval = max(0.1, min(minRequestInterval, updateInterval * 0.2))
+        // Minimal rate limiting - only prevent hammering
+        let baseInterval = max(0.05, min(minRequestInterval, updateInterval * 0.1)) // Changed from 0.2 to 0.1 multiplier
         let currentInterval = baseInterval + adaptiveDelay
         let now = Date()
         let timeSinceLastRequest = now.timeIntervalSince(lastRequestTime)
@@ -130,19 +130,19 @@ actor SNMPManager {
         do {
             let result = try await operation()
             
-            // Record success - reduce adaptive delay
+            // Record success - reduce adaptive delay more aggressively
             recentFailures = max(0, recentFailures - 1)
             if recentFailures == 0 {
-                adaptiveDelay = max(0, adaptiveDelay - 0.1)
+                adaptiveDelay = max(0, adaptiveDelay - 0.2) // Reduced from 0.1 to 0.2 for faster recovery
             }
             lastSuccessTime = Date()
             
             return result
             
         } catch {
-            // Record failure - increase adaptive delay
+            // Record failure - increase adaptive delay but less aggressively
             recentFailures += 1
-            adaptiveDelay = min(maxAdaptiveDelay, adaptiveDelay + 0.2)
+            adaptiveDelay = min(maxAdaptiveDelay, adaptiveDelay + 0.1) // Reduced from 0.2 to 0.1
             
             DebugLogger.logError("SNMP operation failed for \(host), adaptive delay now: \(adaptiveDelay)s", error: error)
             throw error

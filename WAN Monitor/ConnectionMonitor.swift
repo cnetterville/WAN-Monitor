@@ -402,8 +402,8 @@ class ConnectionMonitor: ObservableObject {
     // MARK: - Resilient Consolidated Monitoring
     
     private func startConsolidatedMonitoring() {
-        // Respect user's update interval with a reasonable minimum of 1 second
-        let saferInterval = max(configuration.updateInterval, 1.0) // Changed from 5.0 to 1.0
+        // Use user's update interval directly - no artificial minimum
+        let saferInterval = configuration.updateInterval
         
         consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
             guard let self = self else { return }
