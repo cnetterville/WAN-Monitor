@@ -56,8 +56,8 @@ class NetworkConfiguration: ObservableObject {
     @Published var device2LatencyCriticalThreshold: Double = 100.0
     
     // Update intervals
-    @Published var updateInterval: TimeInterval = 2.0
-    @Published var pingInterval: TimeInterval = 6.0
+    @Published var updateInterval: TimeInterval = 1.0  // Changed from 2.0 to 1.0 for faster refresh
+    @Published var pingInterval: TimeInterval = 5.0    // Changed from 6.0 to 5.0 for faster latency updates
     
     // Speed display preference
     @Published var speedDisplayUnit: SpeedDisplayUnit = .bits

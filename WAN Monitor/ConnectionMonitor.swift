@@ -405,6 +405,8 @@ class ConnectionMonitor: ObservableObject {
         // Use user's update interval directly - no artificial minimum
         let saferInterval = configuration.updateInterval
         
+        DebugLogger.logNetwork("Starting consolidated monitoring with interval: \(saferInterval)s")
+        
         consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor [weak self] in

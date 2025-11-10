@@ -20,9 +20,9 @@ actor SNMPManager {
     
     // Rate limiting with adaptive behavior
     private var lastRequestTime = Date(timeIntervalSince1970: 0)
-    private var minRequestInterval: TimeInterval = 0.05 // Reduced from 0.2 to 0.05 for faster response
+    private var minRequestInterval: TimeInterval = 0.03 // Reduced from 0.05 to 0.03 for even faster response
     private var adaptiveDelay: TimeInterval = 0.0
-    private let maxAdaptiveDelay: TimeInterval = 2.0 // Reduced from 5.0 to 2.0
+    private let maxAdaptiveDelay: TimeInterval = 1.5 // Reduced from 2.0 to 1.5
     
     // Task management
     private var activeTasks: Set<UUID> = []
@@ -99,7 +99,7 @@ actor SNMPManager {
     
     private func rateLimitedOperation<T>(taskId: UUID, host: String, updateInterval: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
         // Minimal rate limiting - only prevent hammering
-        let baseInterval = max(0.05, min(minRequestInterval, updateInterval * 0.1)) // Changed from 0.2 to 0.1 multiplier
+        let baseInterval = max(0.03, min(minRequestInterval, updateInterval * 0.05)) // Changed from 0.1 to 0.05 multiplier
         let currentInterval = baseInterval + adaptiveDelay
         let now = Date()
         let timeSinceLastRequest = now.timeIntervalSince(lastRequestTime)
@@ -133,7 +133,7 @@ actor SNMPManager {
             // Record success - reduce adaptive delay more aggressively
             recentFailures = max(0, recentFailures - 1)
             if recentFailures == 0 {
-                adaptiveDelay = max(0, adaptiveDelay - 0.2) // Reduced from 0.1 to 0.2 for faster recovery
+                adaptiveDelay = max(0, adaptiveDelay - 0.3) // Increased from 0.2 to 0.3 for faster recovery
             }
             lastSuccessTime = Date()
             
@@ -142,7 +142,7 @@ actor SNMPManager {
         } catch {
             // Record failure - increase adaptive delay but less aggressively
             recentFailures += 1
-            adaptiveDelay = min(maxAdaptiveDelay, adaptiveDelay + 0.1) // Reduced from 0.2 to 0.1
+            adaptiveDelay = min(maxAdaptiveDelay, adaptiveDelay + 0.05) // Reduced from 0.1 to 0.05
             
             DebugLogger.logError("SNMP operation failed for \(host), adaptive delay now: \(adaptiveDelay)s", error: error)
             throw error
@@ -152,8 +152,8 @@ actor SNMPManager {
     private func shellSnmpWalk(host: String, community: String, oid: String, taskId: UUID) async throws -> [Int: String] {
         DebugLogger.logSNMP("Starting snmpwalk for host=\(host), oid=\(oid), taskId=\(taskId)")
         
-        // Capture adaptive timeout before entering Task.detached
-        let adaptiveTimeout = min(15, max(5, 8 + Int(adaptiveDelay)))
+        // Capture adaptive timeout before entering Task.detached - reduced for faster response
+        let adaptiveTimeout = min(12, max(4, 6 + Int(adaptiveDelay))) // Reduced from 15/5/8 to 12/4/6
         
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached(priority: .utility) {
@@ -236,8 +236,8 @@ actor SNMPManager {
     }
     
     private func shellSnmpGet(host: String, community: String, oid: String, taskId: UUID) async throws -> UInt64 {
-        // Capture adaptive timeout before entering Task.detached
-        let adaptiveTimeout = min(10, max(3, 5 + Int(adaptiveDelay)))
+        // Capture adaptive timeout before entering Task.detached - reduced for faster response
+        let adaptiveTimeout = min(8, max(2, 4 + Int(adaptiveDelay))) // Reduced from 10/3/5 to 8/2/4
         
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached(priority: .utility) {
