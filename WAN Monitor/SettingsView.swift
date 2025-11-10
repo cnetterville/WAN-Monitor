@@ -266,6 +266,8 @@ struct SettingsView: View {
                                 Text("24 hours").tag(24)
                                 Text("3 days").tag(72)
                                 Text("1 week").tag(168)
+                                Text("2 weeks").tag(336)
+                                Text("30 days").tag(720)
                             }
                             .labelsHidden()
                             .frame(width: 150)
