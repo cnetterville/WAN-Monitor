@@ -215,6 +215,14 @@ struct SettingsView: View {
                             .frame(maxWidth: 150)
                     }
                 }
+                
+                Divider()
+                
+                LatencyColorSettingsCard(deviceIndex: 1, configuration: configuration)
+                
+                if configuration.device2Enabled {
+                    LatencyColorSettingsCard(deviceIndex: 2, configuration: configuration)
+                }
             }
             
             Section {
@@ -544,5 +552,135 @@ struct SettingsView_Previews: PreviewProvider {
         SettingsView(monitor: ConnectionMonitor()) {
             // Empty closure for preview
         }
+    }
+}
+
+// MARK: - Latency Color Settings Card
+
+struct LatencyColorSettingsCard: View {
+    let deviceIndex: Int
+    @ObservedObject var configuration: NetworkConfiguration
+    
+    private var colorEnabled: Binding<Bool> {
+        deviceIndex == 1 ? $configuration.device1LatencyColorEnabled : $configuration.device2LatencyColorEnabled
+    }
+    
+    private var warningThreshold: Binding<Double> {
+        deviceIndex == 1 ? $configuration.device1LatencyWarningThreshold : $configuration.device2LatencyWarningThreshold
+    }
+    
+    private var criticalThreshold: Binding<Double> {
+        deviceIndex == 1 ? $configuration.device1LatencyCriticalThreshold : $configuration.device2LatencyCriticalThreshold
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Device \(deviceIndex) Latency Colors")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Toggle("", isOn: colorEnabled)
+                    .labelsHidden()
+            }
+            
+            if colorEnabled.wrappedValue {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Warning threshold
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "circle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                            Text("Warning Threshold")
+                                .font(.subheadline)
+                            Spacer()
+                            Text("\(warningThreshold.wrappedValue, specifier: "%.0f") ms")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(
+                            value: warningThreshold,
+                            in: 10.0...200.0,
+                            step: 5.0
+                        ) {
+                            Text("Warning Threshold")
+                        } minimumValueLabel: {
+                            Text("10")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } maximumValueLabel: {
+                            Text("200")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    
+                    // Critical threshold
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                            Text("Critical Threshold")
+                                .font(.subheadline)
+                            Spacer()
+                            Text("\(criticalThreshold.wrappedValue, specifier: "%.0f") ms")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(
+                            value: criticalThreshold,
+                            in: 20.0...500.0,
+                            step: 10.0
+                        ) {
+                            Text("Critical Threshold")
+                        } minimumValueLabel: {
+                            Text("20")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } maximumValueLabel: {
+                            Text("500")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    
+                    // Preview
+                    HStack(spacing: 12) {
+                        Image(systemName: "circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                        Text("Good: < \(warningThreshold.wrappedValue, specifier: "%.0f") ms")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        
+                        Image(systemName: "circle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text("\(warningThreshold.wrappedValue, specifier: "%.0f")-\(criticalThreshold.wrappedValue, specifier: "%.0f") ms")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        
+                        Image(systemName: "circle.fill")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                        Text("> \(criticalThreshold.wrappedValue, specifier: "%.0f") ms")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 8)
+            } else {
+                Text("Latency will be displayed without color coding")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }

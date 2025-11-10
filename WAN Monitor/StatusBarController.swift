@@ -237,15 +237,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
                                uploadSpeed.value, uploadSpeed.unit,
                                latency == "-" ? "-" : latency)
         
-        // Color code based on latency
+        // Color code based on latency using configuration thresholds
+        let config = NetworkConfiguration.shared
+        let deviceIndex = label == config.device1Label ? 1 : 2
+        
         if latency != "-", let latencyValue = Double(latency) {
-            if latencyValue > 100 {
-                return (statusText, .systemRed)
-            } else if latencyValue > 50 {
-                return (statusText, .systemOrange)
-            } else {
-                return (statusText, .systemGreen)
-            }
+            return (statusText, config.getLatencyColor(for: deviceIndex, latency: latencyValue))
         }
         
         return (statusText, nil)
@@ -495,20 +492,17 @@ struct ConnectionStatusIcon: View {
                 // Horizontal latency display
                 Text("\(latencyFormatted)ms")
                     .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .foregroundColor(latencyColor(latencyValue))
+                    .foregroundColor(latencyColor(latencyValue, label: label))
                     .frame(width: 55, alignment: .leading)
                     .clipped()
             }
         }
     }
     
-    private func latencyColor(_ latency: Double) -> Color {
-        if latency >= 100 {
-            return Color(NSColor.systemRed)
-        } else if latency >= 50 {
-            return Color(NSColor.systemOrange)
-        } else {
-            return Color(NSColor.systemGreen)
-        }
+    private func latencyColor(_ latency: Double, label: String) -> Color {
+        let config = NetworkConfiguration.shared
+        let deviceIndex = label.uppercased() == config.device1Label.uppercased() ? 1 : 2
+        
+        return config.getLatencyColorSwiftUI(for: deviceIndex, latency: latency) ?? .white
     }
 }

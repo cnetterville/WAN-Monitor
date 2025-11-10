@@ -8,6 +8,8 @@
 import Foundation
 import Combine
 import ServiceManagement
+import AppKit
+import SwiftUI
 
 enum SpeedDisplayUnit: String, CaseIterable {
     case bits = "bits"
@@ -43,6 +45,15 @@ class NetworkConfiguration: ObservableObject {
     // Ping targets
     @Published var pingHost1 = "8.8.8.8"
     @Published var pingHost2 = "1.1.1.1"
+    
+    // Latency color coding thresholds (in milliseconds)
+    @Published var device1LatencyColorEnabled = true
+    @Published var device1LatencyWarningThreshold: Double = 50.0
+    @Published var device1LatencyCriticalThreshold: Double = 100.0
+    
+    @Published var device2LatencyColorEnabled = true
+    @Published var device2LatencyWarningThreshold: Double = 50.0
+    @Published var device2LatencyCriticalThreshold: Double = 100.0
     
     // Update intervals
     @Published var updateInterval: TimeInterval = 2.0
@@ -93,6 +104,15 @@ class NetworkConfiguration: ObservableObject {
         defaults.set(pingHost2, forKey: "pingHost2")
         defaults.set(updateInterval, forKey: "updateInterval")
         defaults.set(pingInterval, forKey: "pingInterval")
+        
+        // Latency color thresholds
+        defaults.set(device1LatencyColorEnabled, forKey: "device1LatencyColorEnabled")
+        defaults.set(device1LatencyWarningThreshold, forKey: "device1LatencyWarningThreshold")
+        defaults.set(device1LatencyCriticalThreshold, forKey: "device1LatencyCriticalThreshold")
+        
+        defaults.set(device2LatencyColorEnabled, forKey: "device2LatencyColorEnabled")
+        defaults.set(device2LatencyWarningThreshold, forKey: "device2LatencyWarningThreshold")
+        defaults.set(device2LatencyCriticalThreshold, forKey: "device2LatencyCriticalThreshold")
         
         // Speed display unit
         defaults.set(speedDisplayUnit.rawValue, forKey: "speedDisplayUnit")
@@ -186,6 +206,27 @@ class NetworkConfiguration: ObservableObject {
         
         if defaults.object(forKey: "pingInterval") != nil {
             pingInterval = defaults.double(forKey: "pingInterval")
+        }
+        
+        // Latency color thresholds
+        if defaults.object(forKey: "device1LatencyColorEnabled") != nil {
+            device1LatencyColorEnabled = defaults.bool(forKey: "device1LatencyColorEnabled")
+        }
+        if defaults.object(forKey: "device1LatencyWarningThreshold") != nil {
+            device1LatencyWarningThreshold = defaults.double(forKey: "device1LatencyWarningThreshold")
+        }
+        if defaults.object(forKey: "device1LatencyCriticalThreshold") != nil {
+            device1LatencyCriticalThreshold = defaults.double(forKey: "device1LatencyCriticalThreshold")
+        }
+        
+        if defaults.object(forKey: "device2LatencyColorEnabled") != nil {
+            device2LatencyColorEnabled = defaults.bool(forKey: "device2LatencyColorEnabled")
+        }
+        if defaults.object(forKey: "device2LatencyWarningThreshold") != nil {
+            device2LatencyWarningThreshold = defaults.double(forKey: "device2LatencyWarningThreshold")
+        }
+        if defaults.object(forKey: "device2LatencyCriticalThreshold") != nil {
+            device2LatencyCriticalThreshold = defaults.double(forKey: "device2LatencyCriticalThreshold")
         }
         
         if let speedUnitString = defaults.object(forKey: "speedDisplayUnit") as? String,
@@ -295,5 +336,41 @@ class NetworkConfiguration: ObservableObject {
     
     func getAllValidationErrors() -> [String] {
         return validateDevice1Configuration() + validateDevice2Configuration()
+    }
+    
+    // MARK: - Latency Color Helpers
+    
+    func getLatencyColor(for deviceIndex: Int, latency: Double) -> NSColor? {
+        let colorEnabled = deviceIndex == 1 ? device1LatencyColorEnabled : device2LatencyColorEnabled
+        
+        guard colorEnabled else { return nil }
+        
+        let warningThreshold = deviceIndex == 1 ? device1LatencyWarningThreshold : device2LatencyWarningThreshold
+        let criticalThreshold = deviceIndex == 1 ? device1LatencyCriticalThreshold : device2LatencyCriticalThreshold
+        
+        if latency >= criticalThreshold {
+            return .systemRed
+        } else if latency >= warningThreshold {
+            return .systemOrange
+        } else {
+            return .systemGreen
+        }
+    }
+    
+    func getLatencyColorSwiftUI(for deviceIndex: Int, latency: Double) -> Color? {
+        let colorEnabled = deviceIndex == 1 ? device1LatencyColorEnabled : device2LatencyColorEnabled
+        
+        guard colorEnabled else { return nil }
+        
+        let warningThreshold = deviceIndex == 1 ? device1LatencyWarningThreshold : device2LatencyWarningThreshold
+        let criticalThreshold = deviceIndex == 1 ? device1LatencyCriticalThreshold : device2LatencyCriticalThreshold
+        
+        if latency >= criticalThreshold {
+            return Color(NSColor.systemRed)
+        } else if latency >= warningThreshold {
+            return Color(NSColor.systemOrange)
+        } else {
+            return Color(NSColor.systemGreen)
+        }
     }
 }
