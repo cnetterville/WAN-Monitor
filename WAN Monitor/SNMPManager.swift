@@ -15,6 +15,9 @@ actor SNMPManager {
     private var activeProcesses: [UUID: Process] = [:]
     private let maxActiveProcesses = 5
     
+    private var processCreationTime: [UUID: Date] = [:]
+    private let maxProcessLifetime: TimeInterval = 30.0
+    
     // Rate limiting with adaptive behavior
     private var lastRequestTime = Date(timeIntervalSince1970: 0)
     private var minRequestInterval: TimeInterval = 0.2 // Reduced from 0.5 to 0.2 for faster response
@@ -69,6 +72,27 @@ actor SNMPManager {
             }
         }
         activeProcesses.removeAll()
+        processCreationTime.removeAll()
+    }
+    
+    func cleanupStaleProcesses() {
+        let now = Date()
+        var staleTaskIds: [UUID] = []
+        
+        for (taskId, creationTime) in processCreationTime {
+            if now.timeIntervalSince(creationTime) > maxProcessLifetime {
+                staleTaskIds.append(taskId)
+            }
+        }
+        
+        for taskId in staleTaskIds {
+            if let process = activeProcesses[taskId], process.isRunning {
+                process.terminate()
+                DebugLogger.logNetwork("Cleaned up stale process for task \(taskId)")
+            }
+            activeProcesses.removeValue(forKey: taskId)
+            processCreationTime.removeValue(forKey: taskId)
+        }
     }
     
     // MARK: - Private Implementation with Adaptive Behavior
@@ -281,10 +305,17 @@ actor SNMPManager {
     
     private func registerProcess(_ process: Process, for taskId: UUID) {
         activeProcesses[taskId] = process
+        processCreationTime[taskId] = Date()
+        
+        // Clean up stale processes opportunistically
+        if activeProcesses.count > maxActiveProcesses - 1 {
+            cleanupStaleProcesses()
+        }
     }
     
     private func unregisterProcess(for taskId: UUID) {
         activeProcesses.removeValue(forKey: taskId)
+        processCreationTime.removeValue(forKey: taskId)
     }
 }
 

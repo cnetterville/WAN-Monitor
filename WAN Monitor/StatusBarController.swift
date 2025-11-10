@@ -8,11 +8,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var settingsWindow: NSWindow?
     
-    // MARK: - Cached Rendering Components
-    private var cachedHostingController: NSHostingController<StatusBarView>?
-    private var cachedTargetSize = CGSize(width: 320, height: 22)
-    private var lastRenderTime = Date.distantPast
-    private let minRenderInterval: TimeInterval = 0.1 // Reduced from 0.5 to allow faster updates
+    // MARK: - Hosted SwiftUI View
+    private var hostingView: NSHostingView<StatusBarView>?
+    private var lastUpdateTime = Date.distantPast
+    private let minUpdateInterval: TimeInterval = 0.1
 
     override init() {
         self.monitor = ConnectionMonitor()
@@ -49,43 +48,14 @@ class StatusBarController: NSObject, NSWindowDelegate {
         // Don't set a persistent menu - let the action handle it
         statusItem.menu = nil
         
-        updateDisplay()
+        // Create the initial hosted SwiftUI view
+        setupHostedView()
     }
     
-    private func setupMonitorObservers() {
-        // Observe monitor changes and update display with less aggressive throttling
-        monitor.objectWillChange
-            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main) // Reduced from 500ms to 100ms
-            .sink { [weak self] _ in
-                self?.updateDisplay()
-            }
-            .store(in: &cancellables)
+    private func setupHostedView() {
+        guard let button = statusItem?.button else { return }
         
-        // Observe configuration changes and update display
-        NetworkConfiguration.shared.objectWillChange
-            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main) // Reduced from 200ms to 100ms
-            .sink { [weak self] _ in
-                // Clear cached controller when config changes
-                self?.cachedHostingController = nil
-                self?.updateDisplay()
-            }
-            .store(in: &cancellables)
-    }
-
-    private func updateDisplay() {
-        guard let statusItem = statusItem else { return }
-        guard let button = statusItem.button else { return }
-        
-        // More responsive throttling based on update interval
-        let now = Date()
         let config = NetworkConfiguration.shared
-        let dynamicRenderInterval = max(0.1, min(config.updateInterval * 0.2, 0.5)) // Scale with user's interval
-        guard now.timeIntervalSince(lastRenderTime) >= dynamicRenderInterval else {
-            return
-        }
-        lastRenderTime = now
-        
-        // Create SwiftUI view
         let statusBarView = StatusBarView(
             device1Label: config.device1Label,
             device1Up: monitor.device1UploadSpeed,
@@ -104,48 +74,59 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2Enabled: config.device2Enabled
         )
         
-        // Render SwiftUI view to image for the button
-        let image = renderSwiftUIToImage(statusBarView)
-        
-        // Set the image on the button
-        button.image = image
-        button.title = ""
-        button.imagePosition = .imageOnly
-        
-        // Add error state coloring if needed
-        let hasErrors = monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil)
-        button.appearsDisabled = hasErrors
-    }
-
-    // MARK: - SwiftUI to Image Rendering
-    
-    private func renderSwiftUIToImage<Content: View>(_ content: Content) -> NSImage {
-        let targetSize = CGSize(
-            width: NetworkConfiguration.shared.device2Enabled ? 300 : 150, 
-            height: 22
-        )
-        
-        // Create hosting view
-        let hostingView = NSHostingView(rootView: content)
-        hostingView.frame = CGRect(origin: .zero, size: targetSize)
-        
-        // Force layout
-        hostingView.needsLayout = true
-        hostingView.layoutSubtreeIfNeeded()
-        
-        // Create image representation
-        guard let bitmapRep = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
-            return NSImage(size: targetSize)
+        // Create hosting view if needed
+        if hostingView == nil {
+            hostingView = NSHostingView(rootView: statusBarView)
+            hostingView?.frame = CGRect(x: 0, y: 0, width: config.device2Enabled ? 300 : 150, height: 22)
+            button.addSubview(hostingView!)
+            
+            // Clear button's image and title since we're using a custom view
+            button.image = nil
+            button.title = ""
+        } else {
+            // Just update the root view - SwiftUI will handle efficient diffing
+            hostingView?.rootView = statusBarView
+            hostingView?.frame = CGRect(x: 0, y: 0, width: config.device2Enabled ? 300 : 150, height: 22)
         }
         
-        // Cache the display
-        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmapRep)
+        // Update button length to match content
+        statusItem?.length = config.device2Enabled ? 300 : 150
+    }
+    
+    private func setupMonitorObservers() {
+        // Observe monitor changes and update display with throttling
+        monitor.objectWillChange
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateDisplay()
+            }
+            .store(in: &cancellables)
         
-        // Create and return the image
-        let image = NSImage(size: targetSize)
-        image.addRepresentation(bitmapRep)
+        // Observe configuration changes and update display
+        NetworkConfiguration.shared.objectWillChange
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateDisplay()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateDisplay() {
+        // Throttle updates
+        let now = Date()
+        let config = NetworkConfiguration.shared
+        let dynamicUpdateInterval = max(0.1, min(config.updateInterval * 0.2, 0.5))
+        guard now.timeIntervalSince(lastUpdateTime) >= dynamicUpdateInterval else {
+            return
+        }
+        lastUpdateTime = now
         
-        return image
+        // Just update the hosted view - no image conversion needed!
+        setupHostedView()
+        
+        // Update button appearance for error states
+        let hasErrors = monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil)
+        statusItem?.button?.appearsDisabled = hasErrors
     }
 
     @objc private func statusItemClicked() {
@@ -374,8 +355,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     deinit {
-        // Cleanup cached components
-        cachedHostingController = nil
+        // Cleanup
+        hostingView = nil
         cancellables.removeAll()
         statusItem = nil
         settingsWindow?.close()
@@ -396,7 +377,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 }
 
-// Updated StatusBarView to work with dual device data and support disabling device 2
+// MARK: - SwiftUI Views
+
 struct StatusBarView: View {
     let device1Label: String
     let device1Up: Double
@@ -450,7 +432,6 @@ struct StatusBarView: View {
     }
 }
 
-// Updated ConnectionStatusIcon to use formatted values
 struct ConnectionStatusIcon: View {
     let label: String
     let uploadFormatted: (value: String, unit: String)
@@ -459,7 +440,7 @@ struct ConnectionStatusIcon: View {
     let latencyValue: Double
 
     // Fixed widths for stable columns
-    private let speedWidth: CGFloat = 35  // Increased from 25 to 35
+    private let speedWidth: CGFloat = 35
     private let unitAndArrowWidth: CGFloat = 40
 
     var body: some View {

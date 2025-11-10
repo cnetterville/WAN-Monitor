@@ -29,8 +29,8 @@ struct DeviceData: Sendable {
 
 // MARK: - Circuit Breaker Implementation
 
-private struct CircuitBreaker {
-    enum State {
+private struct CircuitBreaker: Sendable {
+    enum State: Sendable {
         case closed    // Normal operation
         case open      // Failing, skip requests
         case halfOpen  // Testing if service recovered
@@ -45,6 +45,13 @@ private struct CircuitBreaker {
     let failureThreshold = 5
     let recoveryTimeInterval: TimeInterval = 30.0 // 30 seconds
     let maxBackoffInterval: TimeInterval = 300.0  // 5 minutes
+    
+    nonisolated init() {
+        self.state = .closed
+        self.failureCount = 0
+        self.lastFailureTime = nil
+        self.nextRetryTime = nil
+    }
     
     mutating func recordSuccess() {
         state = .closed
@@ -91,6 +98,104 @@ private struct CircuitBreaker {
     }
 }
 
+// MARK: - Device Monitor State Actor
+
+private actor DeviceMonitorState {
+    var interfaceIndex: Int?
+    var lastInOctets: UInt64?
+    var lastOutOctets: UInt64?
+    var lastTimestamp: Date?
+    var circuitBreaker: CircuitBreaker
+    var lastInterfaceDiscovery: Date?
+    var cachedInterfaces: [NetworkInterface] = []
+    var smoothedUploadSpeed: Double = 0.0
+    var smoothedDownloadSpeed: Double = 0.0
+    
+    init() {
+        self.circuitBreaker = CircuitBreaker()
+    }
+    
+    let interfaceDiscoveryInterval: TimeInterval = 300.0 // 5 minutes
+    let interfaceCacheInterval: TimeInterval = 60.0 // 1 minute cache
+    
+    func getCircuitBreaker() -> CircuitBreaker {
+        return circuitBreaker
+    }
+    
+    func updateCircuitBreaker(_ newBreaker: CircuitBreaker) {
+        circuitBreaker = newBreaker
+    }
+    
+    func getCachedInterfaces() -> (interfaces: [NetworkInterface], lastDiscovery: Date?, cacheInterval: TimeInterval) {
+        return (cachedInterfaces, lastInterfaceDiscovery, interfaceCacheInterval)
+    }
+    
+    func updateCache(_ interfaces: [NetworkInterface]) {
+        cachedInterfaces = interfaces
+        lastInterfaceDiscovery = Date()
+    }
+    
+    func getTrafficState() -> (lastIn: UInt64?, lastOut: UInt64?, lastTime: Date?, smoothedUp: Double, smoothedDown: Double) {
+        return (lastInOctets, lastOutOctets, lastTimestamp, smoothedUploadSpeed, smoothedDownloadSpeed)
+    }
+    
+    func updateTrafficState(inOctets: UInt64, outOctets: UInt64, timestamp: Date, smoothedUp: Double, smoothedDown: Double) {
+        lastInOctets = inOctets
+        lastOutOctets = outOctets
+        lastTimestamp = timestamp
+        smoothedUploadSpeed = smoothedUp
+        smoothedDownloadSpeed = smoothedDown
+    }
+    
+    func resetTrafficState() {
+        lastInOctets = nil
+        lastOutOctets = nil
+        lastTimestamp = nil
+        smoothedUploadSpeed = 0.0
+        smoothedDownloadSpeed = 0.0
+    }
+    
+    func resetAll() {
+        interfaceIndex = nil
+        lastInOctets = nil
+        lastOutOctets = nil
+        lastTimestamp = nil
+        smoothedUploadSpeed = 0.0
+        smoothedDownloadSpeed = 0.0
+        circuitBreaker = CircuitBreaker()
+        lastInterfaceDiscovery = nil
+        cachedInterfaces = []
+    }
+    
+    func getInterfaceIndex() -> Int? {
+        return interfaceIndex
+    }
+    
+    func setInterfaceIndex(_ index: Int?) {
+        interfaceIndex = index
+    }
+    
+    func shouldRediscoverInterfaces(availableInterfaces: [NetworkInterface]) -> Bool {
+        // If no interfaces available, always rediscover
+        if availableInterfaces.isEmpty {
+            return true
+        }
+        
+        // If we have an interface index but it's not in available interfaces, rediscover
+        if let currentIndex = interfaceIndex,
+           !availableInterfaces.contains(where: { $0.index == currentIndex }) {
+            return true
+        }
+        
+        // Periodic rediscovery
+        if let lastDiscovery = lastInterfaceDiscovery {
+            return Date().timeIntervalSince(lastDiscovery) > interfaceDiscoveryInterval
+        }
+        
+        return false
+    }
+}
+
 final class DeviceMonitor: Sendable {
     let deviceIndex: Int
     let host: String
@@ -100,129 +205,15 @@ final class DeviceMonitor: Sendable {
     let interfaceName: String
     let pingHost: String
     
-    // Use actors or locks for thread safety
-    private let lock = NSLock()
-    private var _interfaceIndex: Int?
-    private var _lastInOctets: UInt64?
-    private var _lastOutOctets: UInt64?
-    private var _lastTimestamp: Date?
-    private var _circuitBreaker = CircuitBreaker()
-    private var _lastInterfaceDiscovery: Date?
-    private var _interfaceDiscoveryInterval: TimeInterval = 300.0 // 5 minutes
+    // Use actor for thread-safe state management
+    private let state: DeviceMonitorState
     
     // SNMP OIDs - try 64-bit counters for high speed interfaces
     private let ifHCInOctetsOID = "1.3.6.1.2.1.31.1.1.1.6"   // 64-bit counter
     private let ifHCOutOctetsOID = "1.3.6.1.2.1.31.1.1.1.10" // 64-bit counter
     
     // Smoothing
-    private var _smoothedUploadSpeed: Double = 0.0
-    private var _smoothedDownloadSpeed: Double = 0.0
     private let smoothingFactor: Double = 0.9
-    
-    // Thread-safe accessors with circuit breaker
-    private var circuitBreaker: CircuitBreaker {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _circuitBreaker
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _circuitBreaker = newValue
-        }
-    }
-    
-    private var lastInterfaceDiscovery: Date? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _lastInterfaceDiscovery
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _lastInterfaceDiscovery = newValue
-        }
-    }
-    
-    private var interfaceIndex: Int? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _interfaceIndex
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _interfaceIndex = newValue
-        }
-    }
-    
-    private var lastInOctets: UInt64? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _lastInOctets
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _lastInOctets = newValue
-        }
-    }
-    
-    private var lastOutOctets: UInt64? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _lastOutOctets
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _lastOutOctets = newValue
-        }
-    }
-    
-    private var lastTimestamp: Date? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _lastTimestamp
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _lastTimestamp = newValue
-        }
-    }
-    
-    private var smoothedUploadSpeed: Double {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _smoothedUploadSpeed
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _smoothedUploadSpeed = newValue
-        }
-    }
-    
-    private var smoothedDownloadSpeed: Double {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _smoothedDownloadSpeed
-        }
-        set {
-            lock.lock()
-            defer { lock.unlock() }
-            _smoothedDownloadSpeed = newValue
-        }
-    }
     
     init(deviceIndex: Int, host: String, community: String, port: Int, label: String, interfaceName: String, pingHost: String) {
         self.deviceIndex = deviceIndex
@@ -232,6 +223,7 @@ final class DeviceMonitor: Sendable {
         self.label = label
         self.interfaceName = interfaceName
         self.pingHost = pingHost
+        self.state = DeviceMonitorState()
     }
     
     // MARK: - Optimized Interface Discovery using SNMPManager
@@ -239,10 +231,50 @@ final class DeviceMonitor: Sendable {
     func discoverInterfaces(using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> [NetworkInterface] {
         DebugLogger.logNetwork("===== Starting interface discovery for \(label) =====")
         
-        // Use centralized SNMP manager with rate limiting
-        let ifNames = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.31.1.1.1.1", updateInterval: updateInterval, taskId: taskId)
-        let ifDescr = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.2", updateInterval: updateInterval, taskId: taskId)
-        let ifOperStatus = try await snmpManager.performSnmpWalk(host: host, community: community, oid: "1.3.6.1.2.1.2.2.1.8", updateInterval: updateInterval, taskId: taskId)
+        // Check cache first
+        let (cachedInterfaces, lastDiscovery, cacheInterval) = await state.getCachedInterfaces()
+        
+        if !cachedInterfaces.isEmpty, let lastDiscovery = lastDiscovery {
+            let timeSinceLastDiscovery = Date().timeIntervalSince(lastDiscovery)
+            if timeSinceLastDiscovery < cacheInterval {
+                DebugLogger.logNetwork("Using cached interfaces for \(label) (age: \(Int(timeSinceLastDiscovery))s)")
+                return cachedInterfaces
+            }
+        }
+        
+        // Use concurrent SNMP walks for faster discovery
+        let (ifNames, ifDescr, ifOperStatus) = try await withThrowingTaskGroup(of: (String, [Int: String]).self, returning: ([Int: String], [Int: String], [Int: String]).self) { group in
+            
+            group.addTask {
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.31.1.1.1.1", updateInterval: updateInterval, taskId: taskId)
+                return ("names", result)
+            }
+            
+            group.addTask {
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.2", updateInterval: updateInterval, taskId: taskId)
+                return ("descr", result)
+            }
+            
+            group.addTask {
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.8", updateInterval: updateInterval, taskId: taskId)
+                return ("status", result)
+            }
+            
+            var names: [Int: String] = [:]
+            var descr: [Int: String] = [:]
+            var status: [Int: String] = [:]
+            
+            for try await (type, result) in group {
+                switch type {
+                case "names": names = result
+                case "descr": descr = result
+                case "status": status = result
+                default: break
+                }
+            }
+            
+            return (names, descr, status)
+        }
         
         var interfaces: [NetworkInterface] = []
         
@@ -312,6 +344,10 @@ final class DeviceMonitor: Sendable {
         }
         
         DebugLogger.logNetwork("Interface discovery completed for \(label), found \(sortedInterfaces.count) interfaces")
+        
+        // Update cache
+        await state.updateCache(sortedInterfaces)
+        
         return sortedInterfaces
     }
     
@@ -320,7 +356,7 @@ final class DeviceMonitor: Sendable {
     func updateTrafficData(availableInterfaces: [NetworkInterface], using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> (upload: Double, download: Double, formattedUpload: (String, String), formattedDownload: (String, String)) {
         
         // Check circuit breaker before attempting request
-        var currentCircuitBreaker = circuitBreaker
+        var currentCircuitBreaker = await state.getCircuitBreaker()
         
         guard currentCircuitBreaker.canAttemptRequest() else {
             if let backoffDelay = currentCircuitBreaker.getBackoffDelay() {
@@ -330,7 +366,7 @@ final class DeviceMonitor: Sendable {
         }
         
         // Check if we need to rediscover interfaces
-        let shouldRediscoverInterfaces = shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
+        let shouldRediscoverInterfaces = await state.shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
         if shouldRediscoverInterfaces {
             DebugLogger.logNetwork("\(label) - Interface rediscovery needed")
             throw NetworkDiscoveryError.interfaceNotFound
@@ -339,10 +375,12 @@ final class DeviceMonitor: Sendable {
         DebugLogger.logSNMP("\(label) - Starting traffic update (Circuit Breaker: \(currentCircuitBreaker.state))")
         
         // Ensure we have interface index
+        var interfaceIndex = await state.getInterfaceIndex()
         if interfaceIndex == nil {
             if !interfaceName.isEmpty {
                 if let interface = availableInterfaces.first(where: { $0.name == interfaceName }) {
                     interfaceIndex = interface.index
+                    await state.setInterfaceIndex(interface.index)
                     DebugLogger.logNetwork("\(label) - Found interface '\(interfaceName)' at index \(interface.index)")
                 }
             }
@@ -350,16 +388,18 @@ final class DeviceMonitor: Sendable {
             if interfaceIndex == nil {
                 if let interface = availableInterfaces.first(where: { $0.operStatus == "Up" && $0.ipAddress != "N/A" }) {
                     interfaceIndex = interface.index
+                    await state.setInterfaceIndex(interface.index)
                     DebugLogger.logNetwork("\(label) - Auto-selected first UP interface: \(interface.name) (index \(interface.index))")
                 } else if let interface = availableInterfaces.first(where: { $0.operStatus == "Up" }) {
                     interfaceIndex = interface.index
+                    await state.setInterfaceIndex(interface.index)
                     DebugLogger.logNetwork("\(label) - Auto-selected first UP interface (no IP check): \(interface.name) (index \(interface.index))")
                 }
             }
             
             guard interfaceIndex != nil else {
                 currentCircuitBreaker.recordFailure()
-                circuitBreaker = currentCircuitBreaker
+                await state.updateCircuitBreaker(currentCircuitBreaker)
                 DebugLogger.logError("\(label) - No suitable interface found")
                 throw NetworkDiscoveryError.interfaceNotFound
             }
@@ -375,17 +415,23 @@ final class DeviceMonitor: Sendable {
             
             let now = Date()
             
+            // Get previous state
+            let (lastIn, lastOut, lastTime, smoothedUp, smoothedDown) = await state.getTrafficState()
+            
             // Calculate speeds if we have previous data
-            if let lastIn = lastInOctets,
-               let lastOut = lastOutOctets,
-               let lastTime = lastTimestamp {
+            if let lastIn = lastIn,
+               let lastOut = lastOut,
+               let lastTime = lastTime {
                 
                 let timeDiff = now.timeIntervalSince(lastTime)
+                
+                // Get speed display unit from configuration
+                let speedDisplayUnit = await getSpeedDisplayUnit()
                 
                 // Minimum time difference to avoid division by very small numbers
                 guard timeDiff > 2.0 else {
                     DebugLogger.logSNMP("\(label) - Time difference too small (\(timeDiff)s), skipping calculation")
-                    return (smoothedUploadSpeed, smoothedDownloadSpeed, formatSpeed(smoothedUploadSpeed), formatSpeed(smoothedDownloadSpeed))
+                    return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
                 }
                 
                 // Handle counter wraparound with validation
@@ -398,9 +444,7 @@ final class DeviceMonitor: Sendable {
                     let wrappedDiff = (UInt64.max - lastIn) + currentInOctets
                     if wrappedDiff > 1_000_000_000_000 {
                         DebugLogger.logError("\(label) - Counter wraparound seems unreasonable, resetting")
-                        lastInOctets = currentInOctets
-                        lastOutOctets = currentOutOctets
-                        lastTimestamp = now
+                        await state.updateTrafficState(inOctets: currentInOctets, outOctets: currentOutOctets, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
                         return (0.0, 0.0, ("-", "-"), ("-", "-"))
                     }
                     inDiff = wrappedDiff
@@ -412,9 +456,7 @@ final class DeviceMonitor: Sendable {
                     let wrappedDiff = (UInt64.max - lastOut) + currentOutOctets
                     if wrappedDiff > 1_000_000_000_000 {
                         DebugLogger.logError("\(label) - Counter wraparound seems unreasonable, resetting")
-                        lastInOctets = currentInOctets
-                        lastOutOctets = currentOutOctets
-                        lastTimestamp = now
+                        await state.updateTrafficState(inOctets: currentInOctets, outOctets: currentOutOctets, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
                         return (0.0, 0.0, ("-", "-"), ("-", "-"))
                     }
                     outDiff = wrappedDiff
@@ -429,45 +471,40 @@ final class DeviceMonitor: Sendable {
                 // Sanity check - if speeds are unreasonably high, reset
                 if downloadBps > 10_000_000_000 || uploadBps > 10_000_000_000 {
                     DebugLogger.logError("\(label) - Calculated speeds seem unreasonable, resetting")
-                    lastInOctets = currentInOctets
-                    lastOutOctets = currentOutOctets
-                    lastTimestamp = now
-                    smoothedUploadSpeed = 0.0
-                    smoothedDownloadSpeed = 0.0
+                    await state.updateTrafficState(inOctets: currentInOctets, outOctets: currentOutOctets, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
                     return (0.0, 0.0, ("-", "-"), ("-", "-"))
                 }
                 
                 // Apply smoothing
-                if smoothedUploadSpeed == 0.0 && smoothedDownloadSpeed == 0.0 {
-                    smoothedUploadSpeed = uploadBps
-                    smoothedDownloadSpeed = downloadBps
+                let newSmoothedUpload: Double
+                let newSmoothedDownload: Double
+                
+                if smoothedUp == 0.0 && smoothedDown == 0.0 {
+                    newSmoothedUpload = uploadBps
+                    newSmoothedDownload = downloadBps
                 } else {
-                    smoothedUploadSpeed = (smoothingFactor * uploadBps) + 
-                        ((1 - smoothingFactor) * smoothedUploadSpeed)
-                    smoothedDownloadSpeed = (smoothingFactor * downloadBps) + 
-                        ((1 - smoothingFactor) * smoothedDownloadSpeed)
+                    newSmoothedUpload = (smoothingFactor * uploadBps) + 
+                        ((1 - smoothingFactor) * smoothedUp)
+                    newSmoothedDownload = (smoothingFactor * downloadBps) + 
+                        ((1 - smoothingFactor) * smoothedDown)
                 }
                 
                 // Store current values for next calculation
-                lastInOctets = currentInOctets
-                lastOutOctets = currentOutOctets
-                lastTimestamp = now
+                await state.updateTrafficState(inOctets: currentInOctets, outOctets: currentOutOctets, timestamp: now, smoothedUp: newSmoothedUpload, smoothedDown: newSmoothedDownload)
                 
                 // Record success in circuit breaker
                 currentCircuitBreaker.recordSuccess()
-                circuitBreaker = currentCircuitBreaker
+                await state.updateCircuitBreaker(currentCircuitBreaker)
                 
-                return (smoothedUploadSpeed, smoothedDownloadSpeed, formatSpeed(smoothedUploadSpeed), formatSpeed(smoothedDownloadSpeed))
+                return (newSmoothedUpload, newSmoothedDownload, formatSpeed(newSmoothedUpload, unit: speedDisplayUnit), formatSpeed(newSmoothedDownload, unit: speedDisplayUnit))
             } else {
                 // First run - just store values
                 DebugLogger.logSNMP("\(label) - First run, storing baseline")
-                lastInOctets = currentInOctets
-                lastOutOctets = currentOutOctets
-                lastTimestamp = now
+                await state.updateTrafficState(inOctets: currentInOctets, outOctets: currentOutOctets, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
                 
                 // Record success in circuit breaker
                 currentCircuitBreaker.recordSuccess()
-                circuitBreaker = currentCircuitBreaker
+                await state.updateCircuitBreaker(currentCircuitBreaker)
                 
                 return (0.0, 0.0, ("-", "-"), ("-", "-"))
             }
@@ -475,7 +512,7 @@ final class DeviceMonitor: Sendable {
         } catch {
             // Record failure in circuit breaker
             currentCircuitBreaker.recordFailure()
-            circuitBreaker = currentCircuitBreaker
+            await state.updateCircuitBreaker(currentCircuitBreaker)
             
             DebugLogger.logError("\(label) - Traffic update error, circuit breaker failures: \(currentCircuitBreaker.failureCount)", error: error)
             throw error
@@ -484,24 +521,8 @@ final class DeviceMonitor: Sendable {
     
     // MARK: - Interface Rediscovery Logic
     
-    private func shouldRediscoverInterfaces(availableInterfaces: [NetworkInterface]) -> Bool {
-        // If no interfaces available, always rediscover
-        if availableInterfaces.isEmpty {
-            return true
-        }
-        
-        // If we have an interface index but it's not in available interfaces, rediscover
-        if let currentIndex = interfaceIndex,
-           !availableInterfaces.contains(where: { $0.index == currentIndex }) {
-            return true
-        }
-        
-        // Periodic rediscovery
-        if let lastDiscovery = lastInterfaceDiscovery {
-            return Date().timeIntervalSince(lastDiscovery) > _interfaceDiscoveryInterval
-        }
-        
-        return false
+    private func shouldRediscoverInterfaces(availableInterfaces: [NetworkInterface]) async -> Bool {
+        return await state.shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
     }
     
     // MARK: - Latency Update
@@ -554,20 +575,18 @@ final class DeviceMonitor: Sendable {
     }
 
     func resetState() {
-        lock.lock()
-        defer { lock.unlock() }
-        _lastInOctets = nil
-        _lastOutOctets = nil
-        _lastTimestamp = nil
-        _smoothedUploadSpeed = 0.0
-        _smoothedDownloadSpeed = 0.0
-        _circuitBreaker = CircuitBreaker()
-        _lastInterfaceDiscovery = nil
+        Task {
+            await state.resetAll()
+        }
     }
     
-    private func formatSpeed(_ bytesPerSecond: Double) -> (value: String, unit: String) {
-        let config = NetworkConfiguration.shared
-        
+    private func getSpeedDisplayUnit() async -> SpeedDisplayUnit {
+        await MainActor.run {
+            NetworkConfiguration.shared.speedDisplayUnit
+        }
+    }
+    
+    private func formatSpeed(_ bytesPerSecond: Double, unit: SpeedDisplayUnit) -> (value: String, unit: String) {
         // Reasonable sanity check
         guard bytesPerSecond < 1_000_000_000_000 else {
             return ("ERR", "?/s")
@@ -575,7 +594,7 @@ final class DeviceMonitor: Sendable {
         
         let formattedResult: (value: String, unit: String)
         
-        switch config.speedDisplayUnit {
+        switch unit {
         case .bits:
             // Convert bytes to bits per second
             let bitsPerSecond = bytesPerSecond * 8

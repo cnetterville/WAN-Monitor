@@ -8,17 +8,30 @@
 import Foundation
 import SwiftSnmpKit
 
-struct NetworkInterface: Identifiable, Hashable {
-    let id = UUID()
+struct NetworkInterface: Identifiable, Hashable, Sendable {
+    let id: UUID
     let index: Int
     var name: String
     var description: String
-    var ipAddress: String = "N/A"
-    var subnetMask: String = "N/A"
-    var macAddress: String = "N/A"
-    var operStatus: String = "Unknown"
-    var speed: String = "N/A"
-    var alias: String = ""
+    var ipAddress: String
+    var subnetMask: String
+    var macAddress: String
+    var operStatus: String
+    var speed: String
+    var alias: String
+    
+    nonisolated init(index: Int, name: String, description: String, ipAddress: String = "N/A", subnetMask: String = "N/A", macAddress: String = "N/A", operStatus: String = "Unknown", speed: String = "N/A", alias: String = "") {
+        self.id = UUID()
+        self.index = index
+        self.name = name
+        self.description = description
+        self.ipAddress = ipAddress
+        self.subnetMask = subnetMask
+        self.macAddress = macAddress
+        self.operStatus = operStatus
+        self.speed = speed
+        self.alias = alias
+    }
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(index)

@@ -114,6 +114,26 @@ class ConnectionMonitor: ObservableObject {
         setupConfigurationObserver()
     }
     
+    deinit {
+        DebugLogger.logConfig("ConnectionMonitor deinit - cleaning up resources")
+        consolidatedTimer?.invalidate()
+        
+        // Cancel tasks asynchronously since we can't await in deinit
+        let discoveryTasks = activeDiscoveryTasks
+        let monitoringTasks = activeMonitoringTasks
+        
+        Task { @MainActor in
+            for taskId in discoveryTasks {
+                await SNMPManager.shared.cancelTask(taskId: taskId)
+            }
+            for taskId in monitoringTasks {
+                await SNMPManager.shared.cancelTask(taskId: taskId)
+            }
+        }
+        
+        cancellables.removeAll()
+    }
+
     // MARK: - Configuration Observer
     
     private func setupConfigurationObserver() {
@@ -129,6 +149,25 @@ class ConnectionMonitor: ObservableObject {
     
     private func updateDeviceMonitors() {
         let wasMonitoring = isMonitoring
+        
+        // Check if monitors actually need to be recreated
+        let needsDevice1Update = device1Monitor.host != configuration.device1Host ||
+                                  device1Monitor.community != configuration.device1Community ||
+                                  device1Monitor.port != configuration.device1Port ||
+                                  device1Monitor.interfaceName != configuration.device1InterfaceName ||
+                                  device1Monitor.pingHost != configuration.pingHost1
+        
+        let needsDevice2Update = device2Monitor.host != configuration.device2Host ||
+                                  device2Monitor.community != configuration.device2Community ||
+                                  device2Monitor.port != configuration.device2Port ||
+                                  device2Monitor.interfaceName != configuration.device2InterfaceName ||
+                                  device2Monitor.pingHost != configuration.pingHost2
+        
+        // Only update if something actually changed
+        guard needsDevice1Update || needsDevice2Update else {
+            DebugLogger.logConfig("Configuration changed but monitors don't need recreation")
+            return
+        }
         
         // Stop monitoring if active
         if wasMonitoring {
@@ -363,6 +402,7 @@ class ConnectionMonitor: ObservableObject {
         let saferInterval = max(configuration.updateInterval, 1.0) // Changed from 5.0 to 1.0
         
         consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 
@@ -376,7 +416,10 @@ class ConnectionMonitor: ObservableObject {
         guard isMonitoring else { return }
         
         monitoringCycle += 1
+        
+        #if DEBUG
         DebugLogger.logNetwork("=== Consolidated monitoring cycle \(monitoringCycle) ===")
+        #endif
         
         // Always update traffic data with error handling
         if monitoringCycle % trafficUpdateCycles == 0 {
@@ -395,29 +438,33 @@ class ConnectionMonitor: ObservableObject {
     }
     
     private func updateAllTrafficDataWithRetry() async {
-        // Update device 1 first
-        let taskId1 = UUID()
-        activeMonitoringTasks.append(taskId1)
-        
-        await updateTrafficDataWithRetry(for: 1, taskId: taskId1)
-        
-        // Only update device 2 if it's enabled
+        // Update both devices concurrently if device 2 is enabled
         if configuration.device2Enabled {
-            // Reduce delay between device updates for faster response
-            let deviceDelay = max(0.2, configuration.updateInterval * 0.1) // Scale delay with update interval
-            try? await Task.sleep(nanoseconds: UInt64(deviceDelay * 1_000_000_000))
-            
+            // Create task IDs on main actor
+            let taskId1 = UUID()
             let taskId2 = UUID()
-            activeMonitoringTasks.append(taskId2)
+            addActiveMonitoringTask(taskId1)
+            addActiveMonitoringTask(taskId2)
             
-            await updateTrafficDataWithRetry(for: 2, taskId: taskId2)
+            // Run updates concurrently
+            async let update1: Void = updateTrafficDataWithRetry(for: 1, taskId: taskId1)
+            async let update2: Void = updateTrafficDataWithRetry(for: 2, taskId: taskId2)
             
-            // Remove device 2 task from active list
-            cleanupTasks([taskId2])
+            _ = await (update1, update2)
+            
+            // Cleanup on main actor
+            cleanupTasks([taskId1, taskId2])
+        } else {
+            // Only update device 1
+            let taskId1 = UUID()
+            addActiveMonitoringTask(taskId1)
+            await updateTrafficDataWithRetry(for: 1, taskId: taskId1)
+            cleanupTasks([taskId1])
         }
-        
-        // Remove device 1 task from active list
-        cleanupTasks([taskId1])
+    }
+    
+    private func addActiveMonitoringTask(_ taskId: UUID) {
+        activeMonitoringTasks.append(taskId)
     }
     
     private func updateTrafficDataWithRetry(for deviceIndex: Int, taskId: UUID) async {
@@ -493,17 +540,10 @@ class ConnectionMonitor: ObservableObject {
             activeMonitoringTasks.append(taskId2)
             
             // Update devices concurrently with individual error handling
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    await self.updateLatencyWithRetry(for: 1, taskId: taskId1)
-                }
-                group.addTask {
-                    await self.updateLatencyWithRetry(for: 2, taskId: taskId2)
-                }
-                
-                // Wait for both tasks to complete
-                for await _ in group {}
-            }
+            async let latency1: Void = updateLatencyWithRetry(for: 1, taskId: taskId1)
+            async let latency2: Void = updateLatencyWithRetry(for: 2, taskId: taskId2)
+            
+            _ = await (latency1, latency2)
             
             // Remove tasks from active list
             cleanupTasks([taskId1, taskId2])
