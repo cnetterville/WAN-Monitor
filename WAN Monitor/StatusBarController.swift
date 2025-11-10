@@ -530,7 +530,7 @@ struct ConnectionStatusIcon: View {
     var body: some View {
         HStack(spacing: -6) {
             // MARK: Data & Arrow Column
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: -3) {
                 // Upload Row
                 HStack(spacing: 4) {
                     Text(uploadFormatted.value)
@@ -539,7 +539,6 @@ struct ConnectionStatusIcon: View {
                     HStack(spacing: 1) {
                         Text(uploadFormatted.unit)
                             .foregroundColor(.white)
-                            .fontWeight(.bold)
                         Image(systemName: "arrow.up")
                             .foregroundColor(.red)
                     }
@@ -553,7 +552,6 @@ struct ConnectionStatusIcon: View {
                     HStack(spacing: 1) {
                         Text(downloadFormatted.unit)
                             .foregroundColor(.white)
-                            .fontWeight(.bold)
                         Image(systemName: "arrow.down")
                             .foregroundColor(.blue)
                     }
@@ -578,7 +576,7 @@ struct ConnectionStatusIcon: View {
                 
                 // Horizontal latency display
                 Text("\(latencyFormatted)ms")
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
                     .foregroundColor(latencyColor(latencyValue, label: label))
                     .frame(width: 55, alignment: .leading)
                     .clipped()
