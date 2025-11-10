@@ -72,7 +72,11 @@ class ConnectionMonitor: ObservableObject {
     private var consolidatedTimer: Timer?
     private var monitoringCycle: Int = 0
     private let trafficUpdateCycles = 1 // Update traffic every cycle
-    private let latencyUpdateCycles = 3 // Update latency every 3 cycles (less frequently)
+    private var latencyUpdateCycles: Int {
+        // Calculate how many cycles to skip based on ping interval and update interval
+        let cycles = Int(configuration.pingInterval / configuration.updateInterval)
+        return max(1, cycles) // At least 1 cycle
+    }
     
     // MARK: - Task Management
     private var activeDiscoveryTasks: [UUID] = []
@@ -426,7 +430,7 @@ class ConnectionMonitor: ObservableObject {
             await updateAllTrafficDataWithRetry()
         }
         
-        // Update latency less frequently to reduce load
+        // Update latency based on user-configured ping interval
         if monitoringCycle % latencyUpdateCycles == 0 {
             await updateAllLatencyWithRetry()
         }

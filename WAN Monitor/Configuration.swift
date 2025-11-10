@@ -46,6 +46,7 @@ class NetworkConfiguration: ObservableObject {
     
     // Update intervals
     @Published var updateInterval: TimeInterval = 2.0
+    @Published var pingInterval: TimeInterval = 6.0
     
     // Speed display preference
     @Published var speedDisplayUnit: SpeedDisplayUnit = .bits
@@ -91,6 +92,7 @@ class NetworkConfiguration: ObservableObject {
         defaults.set(pingHost1, forKey: "pingHost1")
         defaults.set(pingHost2, forKey: "pingHost2")
         defaults.set(updateInterval, forKey: "updateInterval")
+        defaults.set(pingInterval, forKey: "pingInterval")
         
         // Speed display unit
         defaults.set(speedDisplayUnit.rawValue, forKey: "speedDisplayUnit")
@@ -180,6 +182,10 @@ class NetworkConfiguration: ObservableObject {
         
         if defaults.object(forKey: "updateInterval") != nil {
             updateInterval = defaults.double(forKey: "updateInterval")
+        }
+        
+        if defaults.object(forKey: "pingInterval") != nil {
+            pingInterval = defaults.double(forKey: "pingInterval")
         }
         
         if let speedUnitString = defaults.object(forKey: "speedDisplayUnit") as? String,

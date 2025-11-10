@@ -170,6 +170,38 @@ struct SettingsView: View {
             }
             
             Section("Network Testing") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Ping Interval")
+                        Spacer()
+                        Text("\(configuration.pingInterval, specifier: "%.1f") seconds")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    
+                    Slider(
+                        value: $configuration.pingInterval,
+                        in: 2.0...30.0,
+                        step: 1.0
+                    ) {
+                        Text("Ping Interval")
+                    } minimumValueLabel: {
+                        Text("2s")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } maximumValueLabel: {
+                        Text("30s")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Text("How often to ping the target hosts for latency measurement")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Divider()
+                
                 LabeledContent("Ping Target (Device 1)") {
                     TextField("8.8.8.8", text: $configuration.pingHost1)
                         .textFieldStyle(.roundedBorder)
