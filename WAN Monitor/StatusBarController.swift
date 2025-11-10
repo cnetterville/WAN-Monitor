@@ -7,6 +7,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var monitor: ConnectionMonitor
     private var cancellables = Set<AnyCancellable>()
     private var settingsWindow: NSWindow?
+    private var device1HistoryWindow: NSWindow?
+    private var device2HistoryWindow: NSWindow?
     
     // MARK: - Hosted SwiftUI View
     private var hostingView: NSHostingView<StatusBarView>?
@@ -161,6 +163,19 @@ class StatusBarController: NSObject, NSWindowDelegate {
                 menu.addItem(device2Item)
             }
             
+            // Add history menu items
+            menu.addItem(NSMenuItem.separator())
+            
+            let device1HistoryItem = NSMenuItem(title: "View \(config.device1Label) History...", action: #selector(showDevice1History), keyEquivalent: "1")
+            device1HistoryItem.target = self
+            menu.addItem(device1HistoryItem)
+            
+            if config.device2Enabled {
+                let device2HistoryItem = NSMenuItem(title: "View \(config.device2Label) History...", action: #selector(showDevice2History), keyEquivalent: "2")
+                device2HistoryItem.target = self
+                menu.addItem(device2HistoryItem)
+            }
+            
             // Add troubleshooting options if there are errors
             if monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil) {
                 menu.addItem(NSMenuItem.separator())
@@ -308,6 +323,72 @@ class StatusBarController: NSObject, NSWindowDelegate {
         }
     }
     
+    @objc private func showDevice1History() {
+        // Close existing window if open
+        if let existingWindow = device1HistoryWindow {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        createHistoryWindow(for: 1)
+    }
+    
+    @objc private func showDevice2History() {
+        // Close existing window if open
+        if let existingWindow = device2HistoryWindow {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        createHistoryWindow(for: 2)
+    }
+    
+    private func createHistoryWindow(for deviceIndex: Int) {
+        let config = NetworkConfiguration.shared
+        let deviceLabel = deviceIndex == 1 ? config.device1Label : config.device2Label
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 700),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        
+        let historyView = NavigationStack {
+            NetworkHistoryView(deviceIndex: deviceIndex)
+        }
+        let hostingController = NSHostingController(rootView: historyView)
+        
+        window.title = "\(deviceLabel) History"
+        window.contentViewController = hostingController
+        
+        // Set minimum and maximum window sizes
+        window.minSize = NSSize(width: 600, height: 500)
+        window.maxSize = NSSize(width: 1200, height: 1000)
+        
+        // Make the window content size fit properly
+        window.contentMinSize = NSSize(width: 600, height: 500)
+        window.contentMaxSize = NSSize(width: 1200, height: 1000)
+        
+        window.center()
+        window.setFrameAutosaveName("Device\(deviceIndex)History")
+        window.delegate = self
+        
+        // Set window to not be released when closed
+        window.isReleasedWhenClosed = false
+        
+        if deviceIndex == 1 {
+            device1HistoryWindow = window
+        } else {
+            device2HistoryWindow = window
+        }
+        
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
     private func createSettingsWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 700),
@@ -354,6 +435,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
         statusItem = nil
         settingsWindow?.close()
         settingsWindow = nil
+        device1HistoryWindow?.close()
+        device1HistoryWindow = nil
+        device2HistoryWindow?.close()
+        device2HistoryWindow = nil
         
         // Cancel all SNMP operations
         Task {
@@ -364,8 +449,14 @@ class StatusBarController: NSObject, NSWindowDelegate {
     // MARK: - NSWindowDelegate
     
     func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window == settingsWindow {
-            settingsWindow = nil
+        if let window = notification.object as? NSWindow {
+            if window == settingsWindow {
+                settingsWindow = nil
+            } else if window == device1HistoryWindow {
+                device1HistoryWindow = nil
+            } else if window == device2HistoryWindow {
+                device2HistoryWindow = nil
+            }
         }
     }
 }
