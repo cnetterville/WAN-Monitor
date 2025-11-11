@@ -26,6 +26,17 @@ enum HistoryTimeRange: String, CaseIterable {
         case .all: return nil
         }
     }
+    
+    var maxDataPoints: Int {
+        switch self {
+        case .hour1: return 300      // ~12 seconds per point
+        case .hours6: return 400     // ~54 seconds per point
+        case .hours24: return 500    // ~2.8 minutes per point
+        case .days7: return 600      // ~16.8 minutes per point
+        case .days30: return 700     // ~1 hour per point
+        case .all: return 800        // adaptive
+        }
+    }
 }
 
 struct NetworkHistoryView: View {
@@ -34,22 +45,11 @@ struct NetworkHistoryView: View {
     let deviceIndex: Int
     
     @State private var selectedTimeRange: HistoryTimeRange = .hours24
+    @State private var processedData: ProcessedHistoryData?
+    @State private var isProcessing = false
     
     private var allHistory: [NetworkDataPoint] {
         deviceIndex == 1 ? historyManager.device1History : historyManager.device2History
-    }
-    
-    private var history: [NetworkDataPoint] {
-        guard let timeInterval = selectedTimeRange.timeInterval else {
-            return allHistory
-        }
-        
-        let cutoffDate = Date().addingTimeInterval(-timeInterval)
-        return allHistory.filter { $0.timestamp >= cutoffDate }
-    }
-    
-    private var statistics: NetworkStatistics {
-        historyManager.getStatistics(device: deviceIndex, filteredHistory: history)
     }
     
     private var deviceLabel: String {
@@ -79,13 +79,16 @@ struct NetworkHistoryView: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .onChange(of: selectedTimeRange) { _, _ in
+                            processData()
+                        }
                         
-                        if history.count < allHistory.count {
+                        if let processed = processedData {
                             HStack(spacing: 4) {
                                 Image(systemName: "info.circle.fill")
                                     .foregroundStyle(.blue)
                                     .font(.caption)
-                                Text("Showing \(history.count) of \(allHistory.count) data points")
+                                Text("Showing \(processed.sampledData.count) of \(processed.filteredCount) data points")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -94,29 +97,35 @@ struct NetworkHistoryView: View {
                     .padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     
-                    // Statistics Cards
-                    StatisticsCardsView(statistics: statistics, deviceLabel: deviceLabel)
-                    
-                    // Upload Speed Chart
-                    ChartCardView(title: "Upload Speed") {
-                        UploadSpeedChart(history: history)
-                    }
-                    
-                    // Download Speed Chart
-                    ChartCardView(title: "Download Speed") {
-                        DownloadSpeedChart(history: history)
-                    }
-                    
-                    // Latency Chart
-                    if history.contains(where: { $0.latency != nil }) {
-                        ChartCardView(title: "Latency") {
-                            LatencyChart(history: history, deviceIndex: deviceIndex)
+                    if let processed = processedData {
+                        // Statistics Cards
+                        StatisticsCardsView(statistics: processed.statistics, deviceLabel: deviceLabel)
+                        
+                        // Upload Speed Chart
+                        ChartCardView(title: "Upload Speed") {
+                            UploadSpeedChart(data: processed.sampledData)
                         }
+                        
+                        // Download Speed Chart
+                        ChartCardView(title: "Download Speed") {
+                            DownloadSpeedChart(data: processed.sampledData)
+                        }
+                        
+                        // Latency Chart
+                        if processed.sampledData.contains(where: { $0.latency != nil }) {
+                            ChartCardView(title: "Latency") {
+                                LatencyChart(data: processed.sampledData, deviceIndex: deviceIndex)
+                            }
+                        }
+                    } else if isProcessing {
+                        ProgressView("Processing data...")
+                            .frame(height: 200)
                     }
                     
                     // Clear History Button
                     Button(role: .destructive) {
                         historyManager.clearHistory(device: deviceIndex)
+                        processedData = nil
                     } label: {
                         Label("Clear History", systemImage: "trash")
                     }
@@ -127,7 +136,101 @@ struct NetworkHistoryView: View {
             .padding()
         }
         .navigationTitle("\(deviceLabel) History")
+        .task {
+            processData()
+        }
+        .onChange(of: allHistory.count) { _, _ in
+            // Only reprocess if count changed significantly (every 10 points)
+            if allHistory.count % 10 == 0 {
+                processData()
+            }
+        }
     }
+    
+    private func processData() {
+        isProcessing = true
+        
+        Task.detached(priority: .userInitiated) {
+            let filtered = await filterHistory()
+            let sampled = await sampleData(filtered, maxPoints: selectedTimeRange.maxDataPoints)
+            let stats = await calculateStatistics(filtered)
+            
+            let processed = ProcessedHistoryData(
+                sampledData: sampled,
+                filteredCount: filtered.count,
+                statistics: stats
+            )
+            
+            await MainActor.run {
+                self.processedData = processed
+                self.isProcessing = false
+            }
+        }
+    }
+    
+    private func filterHistory() async -> [NetworkDataPoint] {
+        let history = allHistory
+        
+        guard let timeInterval = selectedTimeRange.timeInterval else {
+            return history
+        }
+        
+        let cutoffDate = Date().addingTimeInterval(-timeInterval)
+        return history.filter { $0.timestamp >= cutoffDate }
+    }
+    
+    private func sampleData(_ data: [NetworkDataPoint], maxPoints: Int) async -> [NetworkDataPoint] {
+        guard data.count > maxPoints else { return data }
+        
+        // Intelligent sampling: always keep first and last, sample the rest
+        var sampled: [NetworkDataPoint] = []
+        let ratio = Double(data.count) / Double(maxPoints)
+        
+        sampled.append(data.first!)
+        
+        for i in 1..<(maxPoints - 1) {
+            let index = Int(Double(i) * ratio)
+            if index < data.count {
+                sampled.append(data[index])
+            }
+        }
+        
+        sampled.append(data.last!)
+        
+        return sampled
+    }
+    
+    private func calculateStatistics(_ history: [NetworkDataPoint]) async -> NetworkStatistics {
+        guard !history.isEmpty else {
+            return NetworkStatistics()
+        }
+        
+        let uploadSpeeds = history.map { $0.uploadSpeed }
+        let downloadSpeeds = history.map { $0.downloadSpeed }
+        let latencies = history.compactMap { $0.latency }
+        
+        return NetworkStatistics(
+            avgUpload: uploadSpeeds.reduce(0, +) / Double(uploadSpeeds.count),
+            maxUpload: uploadSpeeds.max() ?? 0,
+            minUpload: uploadSpeeds.min() ?? 0,
+            avgDownload: downloadSpeeds.reduce(0, +) / Double(downloadSpeeds.count),
+            maxDownload: downloadSpeeds.max() ?? 0,
+            minDownload: downloadSpeeds.min() ?? 0,
+            avgLatency: latencies.isEmpty ? nil : latencies.reduce(0, +) / Double(latencies.count),
+            maxLatency: latencies.max(),
+            minLatency: latencies.min(),
+            dataPointCount: history.count,
+            timeSpan: history.last?.timestamp.timeIntervalSince(history.first?.timestamp ?? Date()) ?? 0
+        )
+    }
+}
+
+// MARK: - Processed Data Cache
+
+struct ProcessedHistoryData {
+    let sampledData: [NetworkDataPoint]
+    let filteredCount: Int
+    let statistics: NetworkStatistics
 }
 
 // MARK: - Statistics Cards
@@ -240,8 +343,10 @@ struct StatisticsCardsView: View {
             return String(format: "%.0fs", timeInterval)
         } else if timeInterval < 3600 {
             return String(format: "%.0fm", timeInterval / 60)
-        } else {
+        } else if timeInterval < 86400 {
             return String(format: "%.1fh", timeInterval / 3600)
+        } else {
+            return String(format: "%.1fd", timeInterval / 86400)
         }
     }
 }
@@ -297,28 +402,26 @@ struct ChartCardView<Content: View>: View {
     }
 }
 
-// MARK: - Individual Charts
+// MARK: - Optimized Charts
 
 struct UploadSpeedChart: View {
-    let history: [NetworkDataPoint]
+    let data: [NetworkDataPoint]
     
     var body: some View {
-        Chart {
-            ForEach(history) { point in
-                LineMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Speed", point.uploadSpeed * 8 / 1_000_000) // Convert to Mbps
-                )
-                .foregroundStyle(.red)
-                .interpolationMethod(.catmullRom)
-                
-                AreaMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Speed", point.uploadSpeed * 8 / 1_000_000)
-                )
-                .foregroundStyle(.red.opacity(0.1))
-                .interpolationMethod(.catmullRom)
-            }
+        Chart(data) { point in
+            LineMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Speed", point.uploadSpeed * 8 / 1_000_000)
+            )
+            .foregroundStyle(.red.gradient)
+            .interpolationMethod(.catmullRom)
+            
+            AreaMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Speed", point.uploadSpeed * 8 / 1_000_000)
+            )
+            .foregroundStyle(.red.opacity(0.1).gradient)
+            .interpolationMethod(.catmullRom)
         }
         .chartYAxisLabel("Mbps")
         .chartXAxis {
@@ -328,25 +431,23 @@ struct UploadSpeedChart: View {
 }
 
 struct DownloadSpeedChart: View {
-    let history: [NetworkDataPoint]
+    let data: [NetworkDataPoint]
     
     var body: some View {
-        Chart {
-            ForEach(history) { point in
-                LineMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Speed", point.downloadSpeed * 8 / 1_000_000) // Convert to Mbps
-                )
-                .foregroundStyle(.blue)
-                .interpolationMethod(.catmullRom)
-                
-                AreaMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Speed", point.downloadSpeed * 8 / 1_000_000)
-                )
-                .foregroundStyle(.blue.opacity(0.1))
-                .interpolationMethod(.catmullRom)
-            }
+        Chart(data) { point in
+            LineMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Speed", point.downloadSpeed * 8 / 1_000_000)
+            )
+            .foregroundStyle(.blue.gradient)
+            .interpolationMethod(.catmullRom)
+            
+            AreaMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Speed", point.downloadSpeed * 8 / 1_000_000)
+            )
+            .foregroundStyle(.blue.opacity(0.1).gradient)
+            .interpolationMethod(.catmullRom)
         }
         .chartYAxisLabel("Mbps")
         .chartXAxis {
@@ -356,30 +457,32 @@ struct DownloadSpeedChart: View {
 }
 
 struct LatencyChart: View {
-    let history: [NetworkDataPoint]
+    let data: [NetworkDataPoint]
     let deviceIndex: Int
     
     private var config: NetworkConfiguration {
         NetworkConfiguration.shared
     }
     
+    private var latencyData: [NetworkDataPoint] {
+        data.filter { $0.latency != nil }
+    }
+    
     var body: some View {
-        Chart {
-            ForEach(history.filter { $0.latency != nil }) { point in
-                LineMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Latency", point.latency ?? 0)
-                )
-                .foregroundStyle(latencyColor(point.latency ?? 0))
-                .interpolationMethod(.catmullRom)
-                
-                AreaMark(
-                    x: .value("Time", point.timestamp),
-                    y: .value("Latency", point.latency ?? 0)
-                )
-                .foregroundStyle(latencyColor(point.latency ?? 0).opacity(0.1))
-                .interpolationMethod(.catmullRom)
-            }
+        Chart(latencyData) { point in
+            LineMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Latency", point.latency ?? 0)
+            )
+            .foregroundStyle(latencyColor(point.latency ?? 0).gradient)
+            .interpolationMethod(.catmullRom)
+            
+            AreaMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Latency", point.latency ?? 0)
+            )
+            .foregroundStyle(latencyColor(point.latency ?? 0).opacity(0.1).gradient)
+            .interpolationMethod(.catmullRom)
         }
         .chartYAxisLabel("ms")
         .chartXAxis {
