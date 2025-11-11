@@ -139,9 +139,10 @@ struct NetworkHistoryView: View {
         .task {
             processData()
         }
-        .onChange(of: allHistory.count) { _, _ in
-            // Only reprocess if count changed significantly (every 10 points)
-            if allHistory.count % 10 == 0 {
+        .onChange(of: allHistory.count) { oldCount, newCount in
+            // Only reprocess when there's a significant change (every 50 points or 5% change)
+            let threshold = max(50, Int(Double(oldCount) * 0.05))
+            if abs(newCount - oldCount) >= threshold {
                 processData()
             }
         }
@@ -182,19 +183,51 @@ struct NetworkHistoryView: View {
     private func sampleData(_ data: [NetworkDataPoint], maxPoints: Int) async -> [NetworkDataPoint] {
         guard data.count > maxPoints else { return data }
         
-        // Intelligent sampling: always keep first and last, sample the rest
+        // More stable sampling algorithm using time-based bucketing
+        // This ensures consistent results even when data count changes slightly
+        
+        guard let firstTimestamp = data.first?.timestamp,
+              let lastTimestamp = data.last?.timestamp else {
+            return data
+        }
+        
+        let timeRange = lastTimestamp.timeIntervalSince(firstTimestamp)
+        let bucketDuration = timeRange / Double(maxPoints - 1)
+        
         var sampled: [NetworkDataPoint] = []
-        let ratio = Double(data.count) / Double(maxPoints)
+        var currentBucketStart = firstTimestamp
+        var dataIndex = 0
         
-        sampled.append(data.first!)
+        // Always include first point
+        sampled.append(data[0])
         
-        for i in 1..<(maxPoints - 1) {
-            let index = Int(Double(i) * ratio)
-            if index < data.count {
-                sampled.append(data[index])
+        // Create time-based buckets and select one point per bucket
+        for bucketIndex in 1..<(maxPoints - 1) {
+            currentBucketStart = firstTimestamp.addingTimeInterval(Double(bucketIndex) * bucketDuration)
+            let nextBucketStart = currentBucketStart.addingTimeInterval(bucketDuration)
+            
+            // Find points in this bucket
+            var bucketPoints: [NetworkDataPoint] = []
+            while dataIndex < data.count {
+                let point = data[dataIndex]
+                if point.timestamp >= currentBucketStart && point.timestamp < nextBucketStart {
+                    bucketPoints.append(point)
+                    dataIndex += 1
+                } else if point.timestamp >= nextBucketStart {
+                    break
+                } else {
+                    dataIndex += 1
+                }
+            }
+            
+            // Use the middle point of the bucket (more stable than first/last)
+            if !bucketPoints.isEmpty {
+                let middleIndex = bucketPoints.count / 2
+                sampled.append(bucketPoints[middleIndex])
             }
         }
         
+        // Always include last point
         sampled.append(data.last!)
         
         return sampled
