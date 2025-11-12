@@ -507,24 +507,20 @@ struct LatencyChart: View {
                 x: .value("Time", point.timestamp),
                 y: .value("Latency", point.latency ?? 0)
             )
-            .foregroundStyle(latencyColor(point.latency ?? 0).gradient)
+            .foregroundStyle(.green.gradient)
             .interpolationMethod(.catmullRom)
             
             AreaMark(
                 x: .value("Time", point.timestamp),
                 y: .value("Latency", point.latency ?? 0)
             )
-            .foregroundStyle(latencyColor(point.latency ?? 0).opacity(0.1).gradient)
+            .foregroundStyle(.green.opacity(0.1).gradient)
             .interpolationMethod(.catmullRom)
         }
         .chartYAxisLabel("ms")
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 5))
         }
-    }
-    
-    private func latencyColor(_ latency: Double) -> Color {
-        config.getLatencyColorSwiftUI(for: deviceIndex, latency: latency) ?? .green
     }
 }
 
