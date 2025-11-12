@@ -483,7 +483,7 @@ struct StatusBarView: View {
     let device2Enabled: Bool
     
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             // Device 1
             ConnectionStatusIcon(
                 label: device1Label,
