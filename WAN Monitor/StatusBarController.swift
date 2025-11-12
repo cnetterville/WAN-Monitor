@@ -495,10 +495,6 @@ struct StatusBarView: View {
             
             // Only show device 2 if enabled
             if device2Enabled {
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: 1, height: 16)
-                
                 // Device 2
                 ConnectionStatusIcon(
                     label: device2Label,

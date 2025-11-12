@@ -790,7 +790,7 @@ struct LatencyColorSettingsCard: View {
                     // Preview
                     HStack(spacing: 12) {
                         Image(systemName: "circle.fill")
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.white)
                             .font(.caption)
                         Text("Good: < \(warningThreshold.wrappedValue, specifier: "%.0f") ms")
                             .font(.caption)
