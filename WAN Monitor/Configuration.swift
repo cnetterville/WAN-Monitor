@@ -379,7 +379,7 @@ class NetworkConfiguration: ObservableObject {
         } else if latency >= warningThreshold {
             return .systemOrange
         } else {
-            return .systemGreen
+            return .white
         }
     }
     
@@ -396,7 +396,7 @@ class NetworkConfiguration: ObservableObject {
         } else if latency >= warningThreshold {
             return Color(NSColor.systemOrange)
         } else {
-            return Color(NSColor.systemGreen)
+            return .white
         }
     }
 }
