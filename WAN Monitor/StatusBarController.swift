@@ -128,44 +128,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         let config = NetworkConfiguration.shared
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "WAN Monitor", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem.separator())
         
         // Show real data in menu for enabled devices
         if monitor.isMonitoring {
-            // Device 1 info with enhanced status
-            let device1Status = getDeviceStatusText(
-                label: config.device1Label,
-                uploadSpeed: monitor.device1FormattedUploadSpeed,
-                downloadSpeed: monitor.device1FormattedDownloadSpeed,
-                latency: monitor.device1FormattedLatency,
-                error: monitor.device1ErrorMessage
-            )
-            let device1Item = NSMenuItem(title: device1Status.text, action: nil, keyEquivalent: "")
-            if let color = device1Status.color {
-                device1Item.attributedTitle = NSAttributedString(string: device1Status.text, attributes: [.foregroundColor: color])
-            }
-            menu.addItem(device1Item)
-            
-            // Device 2 info - only if enabled
-            if config.device2Enabled {
-                let device2Status = getDeviceStatusText(
-                    label: config.device2Label,
-                    uploadSpeed: monitor.device2FormattedUploadSpeed,
-                    downloadSpeed: monitor.device2FormattedDownloadSpeed,
-                    latency: monitor.device2FormattedLatency,
-                    error: monitor.device2ErrorMessage
-                )
-                let device2Item = NSMenuItem(title: device2Status.text, action: nil, keyEquivalent: "")
-                if let color = device2Status.color {
-                    device2Item.attributedTitle = NSAttributedString(string: device2Status.text, attributes: [.foregroundColor: color])
-                }
-                menu.addItem(device2Item)
-            }
-            
             // Add history menu items
-            menu.addItem(NSMenuItem.separator())
-            
             let device1HistoryItem = NSMenuItem(title: "View \(config.device1Label) History...", action: #selector(showDevice1History), keyEquivalent: "1")
             device1HistoryItem.target = self
             menu.addItem(device1HistoryItem)
