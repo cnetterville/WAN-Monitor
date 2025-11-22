@@ -546,7 +546,7 @@ struct ConnectionStatusIcon: View {
                     .frame(width: 6)
                 
                 // Vertical latency and packet loss display
-                VStack(alignment: .leading, spacing: -1) {
+                VStack(alignment: .leading, spacing: -3) {
                     // Latency display
                     Text("\(latencyFormatted)ms")
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
