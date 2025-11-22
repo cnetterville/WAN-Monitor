@@ -14,13 +14,15 @@ struct NetworkDataPoint: Identifiable, Codable, Sendable {
     let uploadSpeed: Double // bytes per second
     let downloadSpeed: Double // bytes per second
     let latency: Double? // milliseconds
+    let packetLoss: Double? // percentage (0.0 - 100.0)
     
-    init(uploadSpeed: Double, downloadSpeed: Double, latency: Double?) {
+    init(uploadSpeed: Double, downloadSpeed: Double, latency: Double?, packetLoss: Double? = nil) {
         self.id = UUID()
         self.timestamp = Date()
         self.uploadSpeed = uploadSpeed
         self.downloadSpeed = downloadSpeed
         self.latency = latency
+        self.packetLoss = packetLoss
     }
 }
 
@@ -68,11 +70,12 @@ class HistoryManager: ObservableObject {
     
     // MARK: - Data Management
     
-    func addDataPoint(device: Int, uploadSpeed: Double, downloadSpeed: Double, latency: Double?) {
+    func addDataPoint(device: Int, uploadSpeed: Double, downloadSpeed: Double, latency: Double?, packetLoss: Double? = nil) {
         let dataPoint = NetworkDataPoint(
             uploadSpeed: uploadSpeed,
             downloadSpeed: downloadSpeed,
-            latency: latency
+            latency: latency,
+            packetLoss: packetLoss
         )
         
         if device == 1 {
@@ -120,6 +123,7 @@ class HistoryManager: ObservableObject {
         let uploadSpeeds = history.map { $0.uploadSpeed }
         let downloadSpeeds = history.map { $0.downloadSpeed }
         let latencies = history.compactMap { $0.latency }
+        let packetLosses = history.compactMap { $0.packetLoss }
         
         return NetworkStatistics(
             avgUpload: uploadSpeeds.reduce(0, +) / Double(uploadSpeeds.count),
@@ -131,6 +135,9 @@ class HistoryManager: ObservableObject {
             avgLatency: latencies.isEmpty ? nil : latencies.reduce(0, +) / Double(latencies.count),
             maxLatency: latencies.max(),
             minLatency: latencies.min(),
+            avgPacketLoss: packetLosses.isEmpty ? nil : packetLosses.reduce(0, +) / Double(packetLosses.count),
+            maxPacketLoss: packetLosses.max(),
+            minPacketLoss: packetLosses.min(),
             dataPointCount: history.count,
             timeSpan: history.last?.timestamp.timeIntervalSince(history.first?.timestamp ?? Date()) ?? 0
         )
@@ -284,12 +291,16 @@ struct NetworkStatistics {
     let avgLatency: Double?
     let maxLatency: Double?
     let minLatency: Double?
+    let avgPacketLoss: Double?
+    let maxPacketLoss: Double?
+    let minPacketLoss: Double?
     let dataPointCount: Int
     let timeSpan: TimeInterval
     
     init(avgUpload: Double = 0, maxUpload: Double = 0, minUpload: Double = 0,
          avgDownload: Double = 0, maxDownload: Double = 0, minDownload: Double = 0,
          avgLatency: Double? = nil, maxLatency: Double? = nil, minLatency: Double? = nil,
+         avgPacketLoss: Double? = nil, maxPacketLoss: Double? = nil, minPacketLoss: Double? = nil,
          dataPointCount: Int = 0, timeSpan: TimeInterval = 0) {
         self.avgUpload = avgUpload
         self.maxUpload = maxUpload
@@ -300,6 +311,9 @@ struct NetworkStatistics {
         self.avgLatency = avgLatency
         self.maxLatency = maxLatency
         self.minLatency = minLatency
+        self.avgPacketLoss = avgPacketLoss
+        self.maxPacketLoss = maxPacketLoss
+        self.minPacketLoss = minPacketLoss
         self.dataPointCount = dataPointCount
         self.timeSpan = timeSpan
     }

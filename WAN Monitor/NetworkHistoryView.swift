@@ -47,6 +47,8 @@ struct NetworkHistoryView: View {
     @State private var selectedTimeRange: HistoryTimeRange = .hours24
     @State private var processedData: ProcessedHistoryData?
     @State private var isProcessing = false
+    @State private var lastProcessedCount: Int = 0
+    @State private var processingTask: Task<Void, Never>?
     
     private var allHistory: [NetworkDataPoint] {
         deviceIndex == 1 ? historyManager.device1History : historyManager.device2History
@@ -117,6 +119,13 @@ struct NetworkHistoryView: View {
                                 LatencyChart(data: processed.sampledData, deviceIndex: deviceIndex)
                             }
                         }
+                        
+                        // Packet Loss Chart
+                        if processed.sampledData.contains(where: { $0.packetLoss != nil }) {
+                            ChartCardView(title: "Packet Loss") {
+                                PacketLossChart(data: processed.sampledData)
+                            }
+                        }
                     } else if isProcessing {
                         ProgressView("Processing data...")
                             .frame(height: 200)
@@ -140,18 +149,32 @@ struct NetworkHistoryView: View {
             processData()
         }
         .onChange(of: allHistory.count) { oldCount, newCount in
+            // Cancel any pending processing task
+            processingTask?.cancel()
+            
             // Only reprocess when there's a significant change (every 50 points or 5% change)
-            let threshold = max(50, Int(Double(oldCount) * 0.05))
-            if abs(newCount - oldCount) >= threshold {
-                processData()
+            let threshold = max(50, Int(Double(lastProcessedCount) * 0.05))
+            let countDiff = abs(newCount - lastProcessedCount)
+            
+            if countDiff >= threshold {
+                // Debounce: wait a bit before processing to batch updates
+                processingTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second debounce
+                    guard !Task.isCancelled else { return }
+                    processData()
+                }
             }
         }
     }
     
     private func processData() {
-        isProcessing = true
+        // Cancel any existing processing
+        processingTask?.cancel()
         
-        Task.detached(priority: .userInitiated) {
+        isProcessing = true
+        lastProcessedCount = allHistory.count
+        
+        processingTask = Task.detached(priority: .userInitiated) {
             let filtered = await filterHistory()
             let sampled = await sampleData(filtered, maxPoints: selectedTimeRange.maxDataPoints)
             let stats = await calculateStatistics(filtered)
@@ -241,6 +264,7 @@ struct NetworkHistoryView: View {
         let uploadSpeeds = history.map { $0.uploadSpeed }
         let downloadSpeeds = history.map { $0.downloadSpeed }
         let latencies = history.compactMap { $0.latency }
+        let packetLosses = history.compactMap { $0.packetLoss }
         
         return NetworkStatistics(
             avgUpload: uploadSpeeds.reduce(0, +) / Double(uploadSpeeds.count),
@@ -252,6 +276,9 @@ struct NetworkHistoryView: View {
             avgLatency: latencies.isEmpty ? nil : latencies.reduce(0, +) / Double(latencies.count),
             maxLatency: latencies.max(),
             minLatency: latencies.min(),
+            avgPacketLoss: packetLosses.isEmpty ? nil : packetLosses.reduce(0, +) / Double(packetLosses.count),
+            maxPacketLoss: packetLosses.max(),
+            minPacketLoss: packetLosses.min(),
             dataPointCount: history.count,
             timeSpan: history.last?.timestamp.timeIntervalSince(history.first?.timestamp ?? Date()) ?? 0
         )
@@ -320,6 +347,24 @@ struct StatisticsCardsView: View {
                         value: String(format: "%.1f ms", maxLatency),
                         icon: "timer.circle",
                         color: .orange
+                    )
+                }
+            }
+            
+            if let avgPacketLoss = statistics.avgPacketLoss, let maxPacketLoss = statistics.maxPacketLoss {
+                HStack(spacing: 12) {
+                    StatisticCard(
+                        title: "Avg Packet Loss",
+                        value: String(format: "%.1f%%", avgPacketLoss),
+                        icon: "exclamationmark.triangle.fill",
+                        color: .orange
+                    )
+                    
+                    StatisticCard(
+                        title: "Max Packet Loss",
+                        value: String(format: "%.1f%%", maxPacketLoss),
+                        icon: "exclamationmark.triangle",
+                        color: .red
                     )
                 }
             }
@@ -518,6 +563,37 @@ struct LatencyChart: View {
             .interpolationMethod(.catmullRom)
         }
         .chartYAxisLabel("ms")
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 5))
+        }
+    }
+}
+
+struct PacketLossChart: View {
+    let data: [NetworkDataPoint]
+    
+    private var packetLossData: [NetworkDataPoint] {
+        data.filter { $0.packetLoss != nil }
+    }
+    
+    var body: some View {
+        Chart(packetLossData) { point in
+            LineMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Packet Loss", point.packetLoss ?? 0)
+            )
+            .foregroundStyle(.orange.gradient)
+            .interpolationMethod(.catmullRom)
+            
+            AreaMark(
+                x: .value("Time", point.timestamp),
+                y: .value("Packet Loss", point.packetLoss ?? 0)
+            )
+            .foregroundStyle(.orange.opacity(0.1).gradient)
+            .interpolationMethod(.catmullRom)
+        }
+        .chartYAxisLabel("%")
+        .chartYScale(domain: 0...100)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 5))
         }

@@ -89,6 +89,11 @@ class ConnectionMonitor: ObservableObject {
         let cycles = Int(configuration.pingInterval / configuration.updateInterval)
         return max(1, cycles) // At least 1 cycle
     }
+    private var historyUpdateCycles: Int {
+        // Add to history every 30 seconds (or at least every 3 cycles)
+        let cycles = Int(30.0 / configuration.updateInterval)
+        return max(3, cycles) // At least 3 cycles between history updates
+    }
     
     // MARK: - Task Management
     private var activeDiscoveryTasks: [UUID] = []
@@ -570,13 +575,16 @@ class ConnectionMonitor: ObservableObject {
                 self.device1FormattedDownloadSpeed = formattedDownload
                 self.device1ErrorMessage = nil
                 
-                // Add to history
-                HistoryManager.shared.addDataPoint(
-                    device: 1,
-                    uploadSpeed: upload,
-                    downloadSpeed: download,
-                    latency: self.device1Latency
-                )
+                // Add to history only on history update cycles to avoid overwhelming the system
+                if self.monitoringCycle % self.historyUpdateCycles == 0 {
+                    HistoryManager.shared.addDataPoint(
+                        device: 1,
+                        uploadSpeed: upload,
+                        downloadSpeed: download,
+                        latency: self.device1Latency,
+                        packetLoss: self.device1PacketLoss
+                    )
+                }
             } else {
                 self.device2UploadSpeed = upload
                 self.device2DownloadSpeed = download
@@ -584,13 +592,16 @@ class ConnectionMonitor: ObservableObject {
                 self.device2FormattedDownloadSpeed = formattedDownload
                 self.device2ErrorMessage = nil
                 
-                // Add to history
-                HistoryManager.shared.addDataPoint(
-                    device: 2,
-                    uploadSpeed: upload,
-                    downloadSpeed: download,
-                    latency: self.device2Latency
-                )
+                // Add to history only on history update cycles to avoid overwhelming the system
+                if self.monitoringCycle % self.historyUpdateCycles == 0 {
+                    HistoryManager.shared.addDataPoint(
+                        device: 2,
+                        uploadSpeed: upload,
+                        downloadSpeed: download,
+                        latency: self.device2Latency,
+                        packetLoss: self.device2PacketLoss
+                    )
+                }
             }
             
         } catch NetworkDiscoveryError.interfaceNotFound {
