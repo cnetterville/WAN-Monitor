@@ -17,6 +17,10 @@ struct DeviceData: Sendable {
     var formattedDownloadSpeed: (value: String, unit: String) = ("-", "-")
     var latency: Double? = nil
     var formattedLatency: String = "-"
+    var packetsSent: Int = 0
+    var packetsReceived: Int = 0
+    var packetLossPercentage: Double = 0.0
+    var formattedPacketLoss: String = "-"
     var errorMessage: String? = nil
     var availableInterfaces: [NetworkInterface] = []
     var isDiscoveringInterfaces = false
@@ -525,17 +529,18 @@ final class DeviceMonitor: Sendable {
         return await state.shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
     }
     
-    // MARK: - Latency Update
+    // MARK: - Latency and Packet Loss Update
     
-    func updateLatency(taskId: UUID = UUID()) async -> (latency: Double?, formatted: String) {
+    func updateLatency(taskId: UUID = UUID()) async -> (latency: Double?, formatted: String, packetsSent: Int, packetsReceived: Int, packetLoss: Double, formattedLoss: String) {
         let host = pingHost.isEmpty ? "8.8.8.8" : pingHost
         
         do {
-            let result = try await withThrowingTaskGroup(of: (Double?, String).self) { group in
+            let result = try await withThrowingTaskGroup(of: (Double?, String, Int, Int, Double, String).self) { group in
                 group.addTask {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-                    process.arguments = ["-c", "1", "-t", "5", host]
+                    // Send 3 packets for better statistics
+                    process.arguments = ["-c", "3", "-t", "5", host]
                     let pipe = Pipe()
                     process.standardOutput = pipe
                     
@@ -551,15 +556,66 @@ final class DeviceMonitor: Sendable {
                     if process.terminationStatus == 0 {
                         let data = pipe.fileHandleForReading.readDataToEndOfFile()
                         let output = String(data: data, encoding: .utf8) ?? ""
+                        
+                        var latencyValue: Double? = nil
+                        var packetsSent = 0
+                        var packetsReceived = 0
+                        var lossPercentage = 0.0
+                        
+                        // Parse latency from lines like "time=14.2 ms"
                         if let timeRange = output.range(of: "time=") {
                             let timeString = String(output[timeRange.upperBound...])
                             if let timeEnd = timeString.firstIndex(of: " "),
-                               let latencyValue = Double(String(timeString[..<timeEnd])) {
-                                return (latencyValue, String(format: "%.1f", latencyValue))
+                               let latency = Double(String(timeString[..<timeEnd])) {
+                                latencyValue = latency
                             }
                         }
+                        
+                        // Parse packet statistics from line like "3 packets transmitted, 3 packets received, 0.0% packet loss"
+                        let lines = output.components(separatedBy: .newlines)
+                        for line in lines {
+                            // Look for the statistics line
+                            if line.contains("packets transmitted") {
+                                // Pattern: "X packets transmitted, Y packets received"
+                                let components = line.components(separatedBy: ",")
+                                
+                                // Extract transmitted count
+                                if let transmittedPart = components.first {
+                                    let words = transmittedPart.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                                    if let count = words.first, let transmitted = Int(count) {
+                                        packetsSent = transmitted
+                                    }
+                                }
+                                
+                                // Extract received count
+                                if components.count > 1 {
+                                    let receivedPart = components[1]
+                                    let words = receivedPart.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                                    if let count = words.first, let received = Int(count) {
+                                        packetsReceived = received
+                                    }
+                                }
+                                
+                                // Extract packet loss percentage
+                                if components.count > 2 {
+                                    let lossPart = components[2]
+                                    if let percentRange = lossPart.range(of: "%") {
+                                        let lossString = lossPart[..<percentRange.lowerBound].trimmingCharacters(in: .whitespaces)
+                                        if let loss = Double(lossString) {
+                                            lossPercentage = loss
+                                        }
+                                    }
+                                }
+                                break
+                            }
+                        }
+                        
+                        let formattedLatency = latencyValue.map { String(format: "%.1f", $0) } ?? "-"
+                        let formattedLoss = packetsSent > 0 ? String(format: "%.0f%%", lossPercentage) : "-"
+                        
+                        return (latencyValue, formattedLatency, packetsSent, packetsReceived, lossPercentage, formattedLoss)
                     }
-                    return (nil as Double?, "-")
+                    return (nil as Double?, "-", 0, 0, 0.0, "-")
                 }
                 
                 let result = try await group.next()!
@@ -570,7 +626,7 @@ final class DeviceMonitor: Sendable {
             return result
             
         } catch {
-            return (nil as Double?, "-")
+            return (nil as Double?, "-", 0, 0, 0.0, "-")
         }
     }
 

@@ -66,6 +66,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device1UpFormatted: monitor.device1FormattedUploadSpeed,
             device1DownFormatted: monitor.device1FormattedDownloadSpeed,
             device1LatencyFormatted: monitor.device1FormattedLatency,
+            device1PacketLoss: monitor.device1FormattedPacketLoss,
             device2Label: config.device2Label,
             device2Up: monitor.device2UploadSpeed,
             device2Down: monitor.device2DownloadSpeed,
@@ -73,6 +74,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2UpFormatted: monitor.device2FormattedUploadSpeed,
             device2DownFormatted: monitor.device2FormattedDownloadSpeed,
             device2LatencyFormatted: monitor.device2FormattedLatency,
+            device2PacketLoss: monitor.device2FormattedPacketLoss,
             device2Enabled: config.device2Enabled
         )
         
@@ -195,6 +197,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         uploadSpeed: (value: String, unit: String),
         downloadSpeed: (value: String, unit: String),
         latency: String,
+        packetLoss: String,
         error: String?
     ) -> (text: String, color: NSColor?) {
         
@@ -208,11 +211,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
             }
         }
         
-        let statusText = String(format: "%@: ↓%@ %@ ↑%@ %@ (%@ ms)",
+        let statusText = String(format: "%@: ↓%@ %@ ↑%@ %@ | %@ ms | Loss: %@",
                                label,
                                downloadSpeed.value, downloadSpeed.unit,
                                uploadSpeed.value, uploadSpeed.unit,
-                               latency == "-" ? "-" : latency)
+                               latency == "-" ? "-" : latency,
+                               packetLoss == "-" ? "-" : packetLoss)
         
         // Color code based on latency using configuration thresholds
         let config = NetworkConfiguration.shared
@@ -437,6 +441,7 @@ struct StatusBarView: View {
     let device1UpFormatted: (value: String, unit: String)
     let device1DownFormatted: (value: String, unit: String)
     let device1LatencyFormatted: String
+    let device1PacketLoss: String
     
     let device2Label: String
     let device2Up: Double
@@ -445,6 +450,7 @@ struct StatusBarView: View {
     let device2UpFormatted: (value: String, unit: String)
     let device2DownFormatted: (value: String, unit: String)
     let device2LatencyFormatted: String
+    let device2PacketLoss: String
     
     let device2Enabled: Bool
     
@@ -456,7 +462,8 @@ struct StatusBarView: View {
                 uploadFormatted: device1UpFormatted,
                 downloadFormatted: device1DownFormatted,
                 latencyFormatted: device1LatencyFormatted,
-                latencyValue: device1Latency
+                latencyValue: device1Latency,
+                packetLoss: device1PacketLoss
             )
             
             // Only show device 2 if enabled
@@ -467,7 +474,8 @@ struct StatusBarView: View {
                     uploadFormatted: device2UpFormatted,
                     downloadFormatted: device2DownFormatted,
                     latencyFormatted: device2LatencyFormatted,
-                    latencyValue: device2Latency
+                    latencyValue: device2Latency,
+                    packetLoss: device2PacketLoss
                 )
             }
         }
@@ -484,6 +492,7 @@ struct ConnectionStatusIcon: View {
     let downloadFormatted: (value: String, unit: String)
     let latencyFormatted: String
     let latencyValue: Double
+    let packetLoss: String
 
     // Fixed widths for stable columns
     private let speedWidth: CGFloat = 35
@@ -522,7 +531,7 @@ struct ConnectionStatusIcon: View {
             }
             .monospacedDigit()
             
-            // MARK: Label Column - Vertical device label and horizontal latency display
+            // MARK: Label Column - Vertical device label and horizontal latency/loss display
             HStack(spacing: 4) {
                 // Vertical device label text stacked like the original "WAN"
                 VStack(alignment: .center, spacing: -5) {
@@ -536,12 +545,20 @@ struct ConnectionStatusIcon: View {
                 Spacer()
                     .frame(width: 6)
                 
-                // Horizontal latency display
-                Text("\(latencyFormatted)ms")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(latencyColor(latencyValue, label: label))
-                    .frame(width: 55, alignment: .leading)
-                    .clipped()
+                // Vertical latency and packet loss display
+                VStack(alignment: .leading, spacing: -1) {
+                    // Latency display
+                    Text("\(latencyFormatted)ms")
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(latencyColor(latencyValue, label: label))
+                    
+                    // Packet loss display
+                    Text("L:\(packetLoss)")
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(packetLossColor(packetLoss))
+                }
+                .frame(width: 55, alignment: .leading)
+                .clipped()
             }
         }
     }
@@ -551,5 +568,20 @@ struct ConnectionStatusIcon: View {
         let deviceIndex = label.uppercased() == config.device1Label.uppercased() ? 1 : 2
         
         return config.getLatencyColorSwiftUI(for: deviceIndex, latency: latency) ?? .white
+    }
+    
+    private func packetLossColor(_ loss: String) -> Color {
+        // Parse the percentage (remove % sign if present)
+        guard loss != "-" else { return .gray }
+        let cleaned = loss.replacingOccurrences(of: "%", with: "")
+        guard let lossValue = Double(cleaned) else { return .gray }
+        
+        if lossValue == 0 {
+            return .green
+        } else if lossValue < 5 {
+            return .yellow
+        } else {
+            return .red
+        }
     }
 }

@@ -19,6 +19,10 @@ class ConnectionMonitor: ObservableObject {
     @Published var device1FormattedDownloadSpeed: (value: String, unit: String) = ("-", "-")
     @Published var device1Latency: Double? = nil
     @Published var device1FormattedLatency: String = "-"
+    @Published var device1PacketsSent: Int = 0
+    @Published var device1PacketsReceived: Int = 0
+    @Published var device1PacketLoss: Double = 0.0
+    @Published var device1FormattedPacketLoss: String = "-"
     @Published var device1ErrorMessage: String?
     @Published private var _device1AvailableInterfaces: [NetworkInterface] = []
     @Published var device1IsDiscoveringInterfaces = false
@@ -42,6 +46,10 @@ class ConnectionMonitor: ObservableObject {
     @Published var device2FormattedDownloadSpeed: (value: String, unit: String) = ("-", "-")
     @Published var device2Latency: Double? = nil
     @Published var device2FormattedLatency: String = "-"
+    @Published var device2PacketsSent: Int = 0
+    @Published var device2PacketsReceived: Int = 0
+    @Published var device2PacketLoss: Double = 0.0
+    @Published var device2FormattedPacketLoss: String = "-"
     @Published var device2ErrorMessage: String?
     @Published private var _device2AvailableInterfaces: [NetworkInterface] = []
     @Published var device2IsDiscoveringInterfaces = false
@@ -386,6 +394,10 @@ class ConnectionMonitor: ObservableObject {
         device1FormattedDownloadSpeed = ("-", "-")
         device1Latency = nil
         device1FormattedLatency = "-"
+        device1PacketsSent = 0
+        device1PacketsReceived = 0
+        device1PacketLoss = 0.0
+        device1FormattedPacketLoss = "-"
         device1ErrorMessage = nil
         
         device2UploadSpeed = 0.0
@@ -394,6 +406,10 @@ class ConnectionMonitor: ObservableObject {
         device2FormattedDownloadSpeed = ("-", "-")
         device2Latency = nil
         device2FormattedLatency = "-"
+        device2PacketsSent = 0
+        device2PacketsReceived = 0
+        device2PacketLoss = 0.0
+        device2FormattedPacketLoss = "-"
         device2ErrorMessage = nil
         
         DebugLogger.logUI("===== UI STATE RESET COMPLETED =====")
@@ -579,15 +595,23 @@ class ConnectionMonitor: ObservableObject {
     private func updateLatencyWithRetry(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         
-        let (latency, formatted) = await monitor.updateLatency(taskId: taskId)
+        let (latency, formatted, packetsSent, packetsReceived, packetLoss, formattedLoss) = await monitor.updateLatency(taskId: taskId)
         
         // Update UI on main actor
         if deviceIndex == 1 {
             self.device1Latency = latency
             self.device1FormattedLatency = formatted
+            self.device1PacketsSent = packetsSent
+            self.device1PacketsReceived = packetsReceived
+            self.device1PacketLoss = packetLoss
+            self.device1FormattedPacketLoss = formattedLoss
         } else {
             self.device2Latency = latency
             self.device2FormattedLatency = formatted
+            self.device2PacketsSent = packetsSent
+            self.device2PacketsReceived = packetsReceived
+            self.device2PacketLoss = packetLoss
+            self.device2FormattedPacketLoss = formattedLoss
         }
     }
     
