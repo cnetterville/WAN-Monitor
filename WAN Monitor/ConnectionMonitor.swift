@@ -8,6 +8,7 @@
 import Foundation
 import SwiftSnmpKit
 import Combine
+import Network
 
 @MainActor
 class ConnectionMonitor: ObservableObject {
@@ -72,6 +73,9 @@ class ConnectionMonitor: ObservableObject {
     // MARK: - Configuration
     private let configuration: NetworkConfiguration
     
+    // MARK: - Network Path Monitoring
+    private var networkPathMonitor: NetworkPathMonitor?
+    
     // MARK: - Device Monitors
     private var device1Monitor: DeviceMonitor
     private var device2Monitor: DeviceMonitor
@@ -122,6 +126,9 @@ class ConnectionMonitor: ObservableObject {
             pingHost: self.configuration.pingHost2
         )
         
+        // Setup network path monitoring
+        setupNetworkPathMonitoring()
+        
         // Observe configuration changes and recreate monitors
         setupConfigurationObserver()
     }
@@ -129,6 +136,9 @@ class ConnectionMonitor: ObservableObject {
     deinit {
         DebugLogger.logConfig("ConnectionMonitor deinit - cleaning up resources")
         consolidatedTimer?.invalidate()
+        
+        // Stop network path monitoring - call cancel directly to avoid main actor isolation
+        networkPathMonitor = nil
         
         // Cancel tasks asynchronously since we can't await in deinit
         let discoveryTasks = activeDiscoveryTasks
@@ -155,6 +165,54 @@ class ConnectionMonitor: ObservableObject {
                 self?.updateDeviceMonitors()
             }
             .store(in: &cancellables)
+    }
+    
+    // MARK: - Network Path Monitoring
+    
+    private func setupNetworkPathMonitoring() {
+        networkPathMonitor = NetworkPathMonitor()
+        
+        // Handle network path changes
+        networkPathMonitor?.onNetworkChange = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                
+                DebugLogger.logNetwork("Network path change detected in ConnectionMonitor")
+                
+                // If monitoring is active, handle the network change
+                if self.isMonitoring {
+                    if path.status == .satisfied {
+                        DebugLogger.logNetwork("Network connected - ensuring monitoring continues")
+                        // Network is back - trigger interface rediscovery to ensure we're monitoring correctly
+                        Task {
+                            await self.handleNetworkReconnection()
+                        }
+                    } else {
+                        DebugLogger.logNetwork("Network disconnected - monitoring will continue with errors")
+                        // Network is down - monitoring will continue but likely show errors
+                        // Circuit breakers will handle the failures gracefully
+                    }
+                }
+            }
+        }
+    }
+    
+    private func handleNetworkReconnection() async {
+        DebugLogger.logNetwork("Handling network reconnection - rediscovering interfaces")
+        
+        // Reset device states to clear any stale data
+        device1Monitor.resetState()
+        if configuration.device2Enabled {
+            device2Monitor.resetState()
+        }
+        
+        // Rediscover interfaces for all enabled devices
+        await discoverInterfaces(for: 1)
+        if configuration.device2Enabled {
+            await discoverInterfaces(for: 2)
+        }
+        
+        DebugLogger.logNetwork("Network reconnection handling completed")
     }
     
     private var cancellables = Set<AnyCancellable>()
@@ -282,6 +340,8 @@ class ConnectionMonitor: ObservableObject {
         cancelAllActiveTasks()
         
         resetUIState()
+        
+        DebugLogger.logNetwork("Monitoring stopped")
     }
     
     func discoverInterfaces(for deviceIndex: Int) async {

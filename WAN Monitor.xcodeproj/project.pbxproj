@@ -7,10 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E934EEA12ED26AE8004907D5 /* NetworkPathMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */; };
 		E945D6FA2E7A4F0D006D9479 /* SwiftSnmpKit in Frameworks */ = {isa = PBXBuildFile; productRef = E945D6F92E7A4F0D006D9479 /* SwiftSnmpKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPathMonitor.swift; sourceTree = "<group>"; };
 		E945D6EA2E7A4E21006D9479 /* WAN Monitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WAN Monitor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -39,6 +41,7 @@
 			children = (
 				E945D6EC2E7A4E21006D9479 /* WAN Monitor */,
 				E945D6EB2E7A4E21006D9479 /* Products */,
+				E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -128,6 +131,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E934EEA12ED26AE8004907D5 /* NetworkPathMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
