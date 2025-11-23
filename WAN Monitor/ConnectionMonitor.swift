@@ -80,8 +80,8 @@ class ConnectionMonitor: ObservableObject {
     private var device1Monitor: DeviceMonitor
     private var device2Monitor: DeviceMonitor
     
-    // MARK: - Consolidated Timer Management
-    private var consolidatedTimer: Timer?
+    // MARK: - Consolidated Monitoring Management
+    private var monitoringTask: Task<Void, Never>?
     private var monitoringCycle: Int = 0
     private let trafficUpdateCycles = 1 // Update traffic every cycle
     private var latencyUpdateCycles: Int {
@@ -140,7 +140,9 @@ class ConnectionMonitor: ObservableObject {
     
     deinit {
         DebugLogger.logConfig("ConnectionMonitor deinit - cleaning up resources")
-        consolidatedTimer?.invalidate()
+        
+        // Cancel monitoring task
+        monitoringTask?.cancel()
         
         // Stop network path monitoring - call cancel directly to avoid main actor isolation
         networkPathMonitor = nil
@@ -149,7 +151,8 @@ class ConnectionMonitor: ObservableObject {
         let discoveryTasks = activeDiscoveryTasks
         let monitoringTasks = activeMonitoringTasks
         
-        Task { @MainActor in
+        // Use unstructured task for cleanup in deinit
+        Task.detached {
             for taskId in discoveryTasks {
                 await SNMPManager.shared.cancelTask(taskId: taskId)
             }
@@ -337,9 +340,9 @@ class ConnectionMonitor: ObservableObject {
     func stopMonitoring() {
         isMonitoring = false
         
-        // Stop consolidated timer
-        consolidatedTimer?.invalidate()
-        consolidatedTimer = nil
+        // Cancel monitoring task
+        monitoringTask?.cancel()
+        monitoringTask = nil
         
         // Cancel all active tasks
         cancelAllActiveTasks()
@@ -480,21 +483,28 @@ class ConnectionMonitor: ObservableObject {
         DebugLogger.logUI("===== UI STATE RESET COMPLETED =====")
     }
     
-    // MARK: - Resilient Consolidated Monitoring
+    // MARK: - Resilient Consolidated Monitoring with Modern Swift Concurrency
     
     private func startConsolidatedMonitoring() {
-        // Use user's update interval directly - no artificial minimum
-        let saferInterval = configuration.updateInterval
+        // Cancel any existing monitoring task
+        monitoringTask?.cancel()
         
-        DebugLogger.logNetwork("Starting consolidated monitoring with interval: \(saferInterval)s")
+        let updateInterval = configuration.updateInterval
         
-        consolidatedTimer = Timer.scheduledTimer(withTimeInterval: saferInterval, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
+        DebugLogger.logNetwork("Starting consolidated monitoring with interval: \(updateInterval)s")
+        
+        // Create a new monitoring task using structured concurrency
+        monitoringTask = Task { @MainActor in
+            while !Task.isCancelled && isMonitoring {
+                await performConsolidatedUpdate()
                 
-                // Simply call the monitoring update - errors are handled within the method
-                await self.performConsolidatedUpdate()
+                // Sleep for the update interval
+                do {
+                    try await Task.sleep(for: .seconds(updateInterval))
+                } catch {
+                    // Task was cancelled
+                    break
+                }
             }
         }
     }
