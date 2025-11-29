@@ -9,6 +9,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var settingsWindow: NSWindow?
     private var device1HistoryWindow: NSWindow?
     private var device2HistoryWindow: NSWindow?
+    private var lanHistoryWindow: NSWindow?
     
     // MARK: - Hosted SwiftUI View
     private var hostingView: NSHostingView<StatusBarView>?
@@ -58,6 +59,18 @@ class StatusBarController: NSObject, NSWindowDelegate {
         guard let button = statusItem?.button else { return }
         
         let config = NetworkConfiguration.shared
+        
+        // Calculate width based on enabled devices - reduced for tighter layout
+        var width: CGFloat = 130 // Base width for device 1 (reduced from 150)
+        if config.device2Enabled {
+            width += 8 // Spacing between interfaces
+            width += 130 // Reduced from 150
+        }
+        if config.lanEnabled {
+            width += 8 // Spacing between interfaces
+            width += 110 // LAN is narrower (no latency), reduced from 150
+        }
+        
         let statusBarView = StatusBarView(
             device1Label: config.device1Label,
             device1Up: monitor.device1UploadSpeed,
@@ -75,13 +88,19 @@ class StatusBarController: NSObject, NSWindowDelegate {
             device2DownFormatted: monitor.device2FormattedDownloadSpeed,
             device2LatencyFormatted: monitor.device2FormattedLatency,
             device2PacketLoss: monitor.device2FormattedPacketLoss,
-            device2Enabled: config.device2Enabled
+            device2Enabled: config.device2Enabled,
+            lanLabel: config.lanLabel,
+            lanUp: monitor.lanUploadSpeed,
+            lanDown: monitor.lanDownloadSpeed,
+            lanUpFormatted: monitor.lanFormattedUploadSpeed,
+            lanDownFormatted: monitor.lanFormattedDownloadSpeed,
+            lanEnabled: config.lanEnabled
         )
         
         // Create hosting view if needed
         if hostingView == nil {
             hostingView = NSHostingView(rootView: statusBarView)
-            hostingView?.frame = CGRect(x: 0, y: 0, width: config.device2Enabled ? 300 : 150, height: 22)
+            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
             button.addSubview(hostingView!)
             
             // Clear button's image and title since we're using a custom view
@@ -90,11 +109,11 @@ class StatusBarController: NSObject, NSWindowDelegate {
         } else {
             // Just update the root view - SwiftUI will handle efficient diffing
             hostingView?.rootView = statusBarView
-            hostingView?.frame = CGRect(x: 0, y: 0, width: config.device2Enabled ? 300 : 150, height: 22)
+            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         }
         
         // Update button length to match content
-        statusItem?.length = config.device2Enabled ? 300 : 150
+        statusItem?.length = width
     }
     
     private func setupMonitorObservers() {
@@ -121,7 +140,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Update button appearance for error states
         let config = NetworkConfiguration.shared
-        let hasErrors = monitor.device1ErrorMessage != nil || (config.device2Enabled && monitor.device2ErrorMessage != nil)
+        let hasErrors = monitor.device1ErrorMessage != nil || 
+                       (config.device2Enabled && monitor.device2ErrorMessage != nil) ||
+                       (config.lanEnabled && monitor.lanErrorMessage != nil)
         statusItem?.button?.appearsDisabled = hasErrors
     }
 
@@ -142,6 +163,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
                 let device2HistoryItem = NSMenuItem(title: "View \(config.device2Label) History...", action: #selector(showDevice2History), keyEquivalent: "2")
                 device2HistoryItem.target = self
                 menu.addItem(device2HistoryItem)
+            }
+            
+            if config.lanEnabled {
+                let lanHistoryItem = NSMenuItem(title: "View \(config.lanLabel) History...", action: #selector(showLANHistory), keyEquivalent: "3")
+                lanHistoryItem.target = self
+                menu.addItem(lanHistoryItem)
             }
             
             // Add troubleshooting options if there are errors
@@ -315,9 +342,28 @@ class StatusBarController: NSObject, NSWindowDelegate {
         createHistoryWindow(for: 2)
     }
     
+    @objc private func showLANHistory() {
+        // Close existing window if open
+        if let existingWindow = lanHistoryWindow {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        createHistoryWindow(for: 3)
+    }
+    
     private func createHistoryWindow(for deviceIndex: Int) {
         let config = NetworkConfiguration.shared
-        let deviceLabel = deviceIndex == 1 ? config.device1Label : config.device2Label
+        let deviceLabel: String
+        
+        if deviceIndex == 1 {
+            deviceLabel = config.device1Label
+        } else if deviceIndex == 2 {
+            deviceLabel = config.device2Label
+        } else {
+            deviceLabel = config.lanLabel
+        }
         
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 700),
@@ -351,8 +397,10 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         if deviceIndex == 1 {
             device1HistoryWindow = window
-        } else {
+        } else if deviceIndex == 2 {
             device2HistoryWindow = window
+        } else {
+            lanHistoryWindow = window
         }
         
         window.makeKeyAndOrderFront(nil)
@@ -409,6 +457,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
         device1HistoryWindow = nil
         device2HistoryWindow?.close()
         device2HistoryWindow = nil
+        lanHistoryWindow?.close()
+        lanHistoryWindow = nil
         
         // Cancel all SNMP operations
         Task {
@@ -426,6 +476,8 @@ class StatusBarController: NSObject, NSWindowDelegate {
                 device1HistoryWindow = nil
             } else if window == device2HistoryWindow {
                 device2HistoryWindow = nil
+            } else if window == lanHistoryWindow {
+                lanHistoryWindow = nil
             }
         }
     }
@@ -454,6 +506,14 @@ struct StatusBarView: View {
     
     let device2Enabled: Bool
     
+    let lanLabel: String
+    let lanUp: Double
+    let lanDown: Double
+    let lanUpFormatted: (value: String, unit: String)
+    let lanDownFormatted: (value: String, unit: String)
+    
+    let lanEnabled: Bool
+    
     var body: some View {
         HStack(spacing: 0) {
             // Device 1
@@ -463,25 +523,47 @@ struct StatusBarView: View {
                 downloadFormatted: device1DownFormatted,
                 latencyFormatted: device1LatencyFormatted,
                 latencyValue: device1Latency,
-                packetLoss: device1PacketLoss
+                packetLoss: device1PacketLoss,
+                showLatency: true
             )
             
             // Only show device 2 if enabled
             if device2Enabled {
-                // Device 2
+                // Add spacing between interfaces
+                Spacer()
+                    .frame(width: 8)
+                
                 ConnectionStatusIcon(
                     label: device2Label,
                     uploadFormatted: device2UpFormatted,
                     downloadFormatted: device2DownFormatted,
                     latencyFormatted: device2LatencyFormatted,
                     latencyValue: device2Latency,
-                    packetLoss: device2PacketLoss
+                    packetLoss: device2PacketLoss,
+                    showLatency: true
+                )
+            }
+            
+            // Only show LAN if enabled
+            if lanEnabled {
+                // Add spacing between interfaces
+                Spacer()
+                    .frame(width: 8)
+                
+                ConnectionStatusIcon(
+                    label: lanLabel,
+                    uploadFormatted: lanUpFormatted,
+                    downloadFormatted: lanDownFormatted,
+                    latencyFormatted: "-",
+                    latencyValue: 0,
+                    packetLoss: "-",
+                    showLatency: false // LAN doesn't have latency/packet loss
                 )
             }
         }
         .font(.system(size: 10, weight: .regular, design: .monospaced))
         .foregroundColor(.white)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 2)  // Reduced from 4 to 2
         .frame(height: 22)
     }
 }
@@ -493,59 +575,66 @@ struct ConnectionStatusIcon: View {
     let latencyFormatted: String
     let latencyValue: Double
     let packetLoss: String
+    let showLatency: Bool // Controls whether to show latency/packet loss
 
-    // Fixed widths for stable columns
-    private let speedWidth: CGFloat = 35
-    private let unitAndArrowWidth: CGFloat = 40
+    // Fixed widths for stable columns - reduced for tighter layout
+    private let speedWidth: CGFloat = 32  // Reduced from 35
+    private let unitWidth: CGFloat = 28  // Reduced from 45
+    private let arrowWidth: CGFloat = 10  // Reduced from 12
 
     var body: some View {
-        HStack(spacing: -6) {
-            // MARK: Data & Arrow Column
-            VStack(alignment: .leading, spacing: -3) {
-                // Upload Row
-                HStack(spacing: 4) {
-                    Text(uploadFormatted.value)
-                        .frame(width: speedWidth, alignment: .trailing)
-                        .foregroundColor(.white)
-                    HStack(spacing: 1) {
-                        Text(uploadFormatted.unit)
-                            .foregroundColor(.white)
-                        Image(systemName: "arrow.up")
-                            .foregroundColor(.red)
-                    }
-                    .frame(width: unitAndArrowWidth, alignment: .leading)
-                }
-                // Download Row
-                HStack(spacing: 4) {
-                    Text(downloadFormatted.value)
-                        .frame(width: speedWidth, alignment: .trailing)
-                        .foregroundColor(.white)
-                    HStack(spacing: 1) {
-                        Text(downloadFormatted.unit)
-                            .foregroundColor(.white)
-                        Image(systemName: "arrow.down")
-                            .foregroundColor(.blue)
-                    }
-                    .frame(width: unitAndArrowWidth, alignment: .leading)
-                }
+        HStack(spacing: 0) {
+            // MARK: Data Column - Values aligned right
+            VStack(alignment: .trailing, spacing: -3) {
+                // Upload value
+                Text(uploadFormatted.value)
+                    .frame(width: speedWidth, alignment: .trailing)
+                    .foregroundColor(.white)
+                
+                // Download value
+                Text(downloadFormatted.value)
+                    .frame(width: speedWidth, alignment: .trailing)
+                    .foregroundColor(.white)
             }
             .monospacedDigit()
             
-            // MARK: Label Column - Vertical device label and horizontal latency/loss display
-            HStack(spacing: 4) {
-                // Vertical device label text stacked like the original "WAN"
-                VStack(alignment: .center, spacing: -5) {
-                    ForEach(Array(label.uppercased()), id: \.self) { char in
-                        Text(String(char))
-                            .foregroundColor(.white)
-                    }
+            // MARK: Unit & Arrow Column - Units and arrows aligned left
+            VStack(alignment: .leading, spacing: -3) {
+                // Upload unit and arrow
+                HStack(spacing: 0) {  // Reduced from 1 to 0
+                    Text(uploadFormatted.unit)
+                        .foregroundColor(.white)
+                        .frame(minWidth: unitWidth, alignment: .leading)
+                    Image(systemName: "arrow.up")
+                        .foregroundColor(.red)
+                        .frame(width: arrowWidth, alignment: .leading)
                 }
-                .fixedSize()
                 
+                // Download unit and arrow
+                HStack(spacing: 0) {  // Reduced from 1 to 0
+                    Text(downloadFormatted.unit)
+                        .foregroundColor(.white)
+                        .frame(minWidth: unitWidth, alignment: .leading)
+                    Image(systemName: "arrow.down")
+                        .foregroundColor(.blue)
+                        .frame(width: arrowWidth, alignment: .leading)
+                }
+            }
+            
+            // MARK: Label Column - Vertical device label (close to arrows)
+            VStack(alignment: .center, spacing: -5) {
+                ForEach(Array(label.uppercased()), id: \.self) { char in
+                    Text(String(char))
+                        .foregroundColor(.white)
+                }
+            }
+            .fixedSize()
+            
+            // MARK: Latency Column (optional) - Only shown for WAN devices
+            if showLatency {
                 Spacer()
-                    .frame(width: 6)
+                    .frame(width: 4)  // Reduced from 6
                 
-                // Vertical latency and packet loss display
                 VStack(alignment: .leading, spacing: -3) {
                     // Latency display
                     Text("\(latencyFormatted)ms")
@@ -557,10 +646,10 @@ struct ConnectionStatusIcon: View {
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
                         .foregroundColor(packetLossColor(packetLoss))
                 }
-                .frame(width: 55, alignment: .leading)
-                .clipped()
+                .frame(width: 48, alignment: .leading)  // Reduced from 55
             }
         }
+        .frame(height: 22) // Fixed height to match status bar
     }
     
     private func latencyColor(_ latency: Double, label: String) -> Color {

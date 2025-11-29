@@ -91,7 +91,7 @@ final class LocalInterfaceMonitor: Sendable {
     let label: String
     
     private let state: LocalMonitorState
-    private let smoothingFactor: Double = 0.9
+    private let smoothingFactor: Double = 0.7  // Reduced from 0.9 for more responsive updates
     
     init(interfaceName: String, label: String) {
         self.interfaceName = interfaceName
@@ -186,6 +186,7 @@ final class LocalInterfaceMonitor: Sendable {
         if name.hasPrefix("en") { return "Network (\(name))" }
         if name.hasPrefix("pdp_ip") { return "Cellular (\(name))" }
         if name.hasPrefix("bridge") { return "Bridge (\(name))" }
+        if name == "bond0" { return "Link Aggregation (bond0)" }
         return name
     }
     
@@ -195,9 +196,27 @@ final class LocalInterfaceMonitor: Sendable {
         
         DebugLogger.logSNMP("LAN (\(label)) - Starting traffic update for interface: \(interfaceName)")
         
-        // Get current interface statistics
-        guard let (inBytes, outBytes) = getInterfaceStats(interfaceName: interfaceName) else {
-            DebugLogger.logError("LAN (\(label)) - Failed to get interface stats for \(interfaceName)")
+        // Parse interface names - support comma-separated list for bonded connections
+        let interfaceNames = interfaceName.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        
+        // Get current interface statistics - sum across all interfaces
+        var totalInBytes: UInt64 = 0
+        var totalOutBytes: UInt64 = 0
+        var foundAnyInterface = false
+        
+        for ifName in interfaceNames {
+            if let (inBytes, outBytes) = getInterfaceStats(interfaceName: ifName) {
+                totalInBytes += inBytes
+                totalOutBytes += outBytes
+                foundAnyInterface = true
+                DebugLogger.logSNMP("LAN (\(label)) - Interface \(ifName): in=\(inBytes), out=\(outBytes)")
+            } else {
+                DebugLogger.logError("LAN (\(label)) - Failed to get interface stats for \(ifName)")
+            }
+        }
+        
+        guard foundAnyInterface else {
+            DebugLogger.logError("LAN (\(label)) - Failed to get stats for any interface in: \(interfaceName)")
             throw NetworkDiscoveryError.interfaceNotFound
         }
         
@@ -218,7 +237,8 @@ final class LocalInterfaceMonitor: Sendable {
             
             // Minimum time difference to avoid division by very small numbers
             guard timeDiff > 0.5 else {
-                DebugLogger.logSNMP("LAN (\(label)) - Time difference too small (\(timeDiff)s), skipping calculation")
+                DebugLogger.logSNMP("LAN (\(label)) - Time difference too small (\(timeDiff)s), using previous values")
+                // Don't return "---", use the last known good values instead
                 return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
             }
             
@@ -226,28 +246,31 @@ final class LocalInterfaceMonitor: Sendable {
             let inDiff: UInt64
             let outDiff: UInt64
             
-            if inBytes >= lastIn {
-                inDiff = inBytes - lastIn
+            if totalInBytes >= lastIn {
+                inDiff = totalInBytes - lastIn
             } else {
-                // Counter wrapped around
-                let wrappedDiff = (UInt64.max - lastIn) + inBytes
+                // Counter wrapped around - this can happen on interface reset or system sleep/wake
+                let wrappedDiff = (UInt64.max - lastIn) + totalInBytes
                 if wrappedDiff > 1_000_000_000_000 {
-                    DebugLogger.logError("LAN (\(label)) - Counter wraparound seems unreasonable, resetting")
-                    await state.updateTrafficState(inBytes: inBytes, outBytes: outBytes, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
-                    return (0.0, 0.0, ("-", "-"), ("-", "-"))
+                    // Unreasonable wraparound - likely interface reset, just update baseline
+                    DebugLogger.logError("LAN (\(label)) - Unreasonable counter change detected, updating baseline")
+                    await state.updateTrafficState(inBytes: totalInBytes, outBytes: totalOutBytes, timestamp: now, smoothedUp: smoothedUp, smoothedDown: smoothedDown)
+                    // Keep showing last good values instead of "---"
+                    return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
                 }
                 inDiff = wrappedDiff
             }
             
-            if outBytes >= lastOut {
-                outDiff = outBytes - lastOut
+            if totalOutBytes >= lastOut {
+                outDiff = totalOutBytes - lastOut
             } else {
                 // Counter wrapped around
-                let wrappedDiff = (UInt64.max - lastOut) + outBytes
+                let wrappedDiff = (UInt64.max - lastOut) + totalOutBytes
                 if wrappedDiff > 1_000_000_000_000 {
-                    DebugLogger.logError("LAN (\(label)) - Counter wraparound seems unreasonable, resetting")
-                    await state.updateTrafficState(inBytes: inBytes, outBytes: outBytes, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
-                    return (0.0, 0.0, ("-", "-"), ("-", "-"))
+                    DebugLogger.logError("LAN (\(label)) - Unreasonable counter change detected, updating baseline")
+                    await state.updateTrafficState(inBytes: totalInBytes, outBytes: totalOutBytes, timestamp: now, smoothedUp: smoothedUp, smoothedDown: smoothedDown)
+                    // Keep showing last good values instead of "---"
+                    return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
                 }
                 outDiff = wrappedDiff
             }
@@ -256,13 +279,14 @@ final class LocalInterfaceMonitor: Sendable {
             let downloadBps = Double(inDiff) / timeDiff
             let uploadBps = Double(outDiff) / timeDiff
             
-            DebugLogger.logSNMP("LAN (\(label)) - Calculated: Up=\(uploadBps) bytes/s, Down=\(downloadBps) bytes/s")
+            DebugLogger.logSNMP("LAN (\(label)) - Calculated: Up=\(uploadBps) bytes/s, Down=\(downloadBps) bytes/s (Combined from \(interfaceNames.count) interface(s))")
             
-            // Sanity check - if speeds are unreasonably high, reset
-            if downloadBps > 10_000_000_000 || uploadBps > 10_000_000_000 {
-                DebugLogger.logError("LAN (\(label)) - Calculated speeds seem unreasonable, resetting")
-                await state.updateTrafficState(inBytes: inBytes, outBytes: outBytes, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
-                return (0.0, 0.0, ("-", "-"), ("-", "-"))
+            // Sanity check - if speeds are unreasonably high (>100 Gbps), update baseline but keep showing data
+            if downloadBps > 100_000_000_000 || uploadBps > 100_000_000_000 {
+                DebugLogger.logError("LAN (\(label)) - Calculated speeds seem unreasonable (likely counter reset), updating baseline")
+                await state.updateTrafficState(inBytes: totalInBytes, outBytes: totalOutBytes, timestamp: now, smoothedUp: smoothedUp, smoothedDown: smoothedDown)
+                // Keep showing last good values instead of resetting to "---"
+                return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
             }
             
             // Apply smoothing
@@ -278,14 +302,16 @@ final class LocalInterfaceMonitor: Sendable {
             }
             
             // Store current values for next calculation
-            await state.updateTrafficState(inBytes: inBytes, outBytes: outBytes, timestamp: now, smoothedUp: newSmoothedUpload, smoothedDown: newSmoothedDownload)
+            await state.updateTrafficState(inBytes: totalInBytes, outBytes: totalOutBytes, timestamp: now, smoothedUp: newSmoothedUpload, smoothedDown: newSmoothedDownload)
             
             return (newSmoothedUpload, newSmoothedDownload, formatSpeed(newSmoothedUpload, unit: speedDisplayUnit), formatSpeed(newSmoothedDownload, unit: speedDisplayUnit))
         } else {
-            // First run - just store values
-            DebugLogger.logSNMP("LAN (\(label)) - First run, storing baseline")
-            await state.updateTrafficState(inBytes: inBytes, outBytes: outBytes, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
-            return (0.0, 0.0, ("-", "-"), ("-", "-"))
+            // First run - just store values and show zeros instead of "---"
+            DebugLogger.logSNMP("LAN (\(label)) - First run, storing baseline for \(interfaceNames.count) interface(s)")
+            await state.updateTrafficState(inBytes: totalInBytes, outBytes: totalOutBytes, timestamp: now, smoothedUp: 0.0, smoothedDown: 0.0)
+            
+            let speedDisplayUnit = await getSpeedDisplayUnit()
+            return (0.0, 0.0, formatSpeed(0.0, unit: speedDisplayUnit), formatSpeed(0.0, unit: speedDisplayUnit))
         }
     }
     

@@ -67,6 +67,15 @@ class ConnectionMonitor: ObservableObject {
         }
     }
     
+    // MARK: - Published Properties for LAN
+    @Published var lanUploadSpeed: Double = 0.0
+    @Published var lanDownloadSpeed: Double = 0.0
+    @Published var lanFormattedUploadSpeed: (value: String, unit: String) = ("-", "-")
+    @Published var lanFormattedDownloadSpeed: (value: String, unit: String) = ("-", "-")
+    @Published var lanErrorMessage: String?
+    @Published var lanAvailableInterfaces: [LocalInterface] = []
+    @Published var lanIsDiscoveringInterfaces = false
+    
     // MARK: - General State
     @Published var isMonitoring = false
     
@@ -79,6 +88,7 @@ class ConnectionMonitor: ObservableObject {
     // MARK: - Device Monitors
     private var device1Monitor: DeviceMonitor
     private var device2Monitor: DeviceMonitor
+    private var lanMonitor: LocalInterfaceMonitor?
     
     // MARK: - Consolidated Monitoring Management
     private var monitoringTask: Task<Void, Never>?
@@ -130,6 +140,14 @@ class ConnectionMonitor: ObservableObject {
             interfaceName: self.configuration.device2InterfaceName,
             pingHost: self.configuration.pingHost2
         )
+        
+        // Create LAN monitor if enabled
+        if self.configuration.lanEnabled {
+            self.lanMonitor = LocalInterfaceMonitor(
+                interfaceName: self.configuration.lanInterfaceName,
+                label: self.configuration.lanLabel
+            )
+        }
         
         // Setup network path monitoring
         setupNetworkPathMonitoring()
@@ -213,11 +231,17 @@ class ConnectionMonitor: ObservableObject {
         if configuration.device2Enabled {
             device2Monitor.resetState()
         }
+        if configuration.lanEnabled {
+            lanMonitor?.resetState()
+        }
         
         // Rediscover interfaces for all enabled devices
         await discoverInterfaces(for: 1)
         if configuration.device2Enabled {
             await discoverInterfaces(for: 2)
+        }
+        if configuration.lanEnabled {
+            await discoverLANInterfaces()
         }
         
         DebugLogger.logNetwork("Network reconnection handling completed")
@@ -241,8 +265,13 @@ class ConnectionMonitor: ObservableObject {
                                   device2Monitor.interfaceName != configuration.device2InterfaceName ||
                                   device2Monitor.pingHost != configuration.pingHost2
         
+        let needsLANUpdate = (configuration.lanEnabled && lanMonitor == nil) ||
+                            (!configuration.lanEnabled && lanMonitor != nil) ||
+                            (lanMonitor?.interfaceName != configuration.lanInterfaceName) ||
+                            (lanMonitor?.label != configuration.lanLabel)
+        
         // Only update if something actually changed
-        guard needsDevice1Update || needsDevice2Update else {
+        guard needsDevice1Update || needsDevice2Update || needsLANUpdate else {
             DebugLogger.logConfig("Configuration changed but monitors don't need recreation")
             return
         }
@@ -275,6 +304,16 @@ class ConnectionMonitor: ObservableObject {
             interfaceName: configuration.device2InterfaceName,
             pingHost: configuration.pingHost2
         )
+        
+        // Recreate LAN monitor if enabled
+        if configuration.lanEnabled {
+            lanMonitor = LocalInterfaceMonitor(
+                interfaceName: configuration.lanInterfaceName,
+                label: configuration.lanLabel
+            )
+        } else {
+            lanMonitor = nil
+        }
         
         // Restart monitoring if it was active
         if wasMonitoring {
@@ -311,12 +350,15 @@ class ConnectionMonitor: ObservableObject {
         isMonitoring = true
         monitoringCycle = 0
         
-        DebugLogger.logNetwork("Starting monitoring for devices (Device 2 enabled: \(configuration.device2Enabled))")
+        DebugLogger.logNetwork("Starting monitoring for devices (Device 2 enabled: \(configuration.device2Enabled), LAN enabled: \(configuration.lanEnabled))")
         
         // Reset device states
         device1Monitor.resetState()
         if configuration.device2Enabled {
             device2Monitor.resetState()
+        }
+        if configuration.lanEnabled {
+            lanMonitor?.resetState()
         }
         
         resetUIState()
@@ -327,6 +369,9 @@ class ConnectionMonitor: ObservableObject {
             await discoverInterfaces(for: 1)
             if configuration.device2Enabled {
                 await discoverInterfaces(for: 2)
+            }
+            if configuration.lanEnabled {
+                await discoverLANInterfaces()
             }
             DebugLogger.logNetwork("Interface discovery completed, starting consolidated monitoring")
         }
@@ -413,6 +458,29 @@ class ConnectionMonitor: ObservableObject {
         DebugLogger.logNetwork("===== DISCOVERY PROCESS COMPLETED FOR DEVICE \(deviceIndex) =====")
     }
     
+    func discoverLANInterfaces() async {
+        guard configuration.lanEnabled else {
+            DebugLogger.logNetwork("Skipping LAN interface discovery - disabled")
+            return
+        }
+        
+        DebugLogger.logNetwork("===== STARTING LAN INTERFACE DISCOVERY =====")
+        
+        lanIsDiscoveringInterfaces = true
+        lanErrorMessage = nil
+        
+        // Discover local interfaces
+        let interfaces = LocalInterfaceMonitor.discoverLocalInterfaces()
+        
+        DebugLogger.logNetwork("Discovery successful for LAN, found \(interfaces.count) interfaces")
+        
+        self.lanAvailableInterfaces = interfaces
+        self.lanIsDiscoveringInterfaces = false
+        self.lanErrorMessage = nil
+        
+        DebugLogger.logNetwork("===== LAN DISCOVERY PROCESS COMPLETED =====")
+    }
+    
     // MARK: - Convenience Properties for Backwards Compatibility
     
     var uploadSpeed: Double {
@@ -480,6 +548,12 @@ class ConnectionMonitor: ObservableObject {
         device2FormattedPacketLoss = "-"
         device2ErrorMessage = nil
         
+        lanUploadSpeed = 0.0
+        lanDownloadSpeed = 0.0
+        lanFormattedUploadSpeed = ("-", "-")
+        lanFormattedDownloadSpeed = ("-", "-")
+        lanErrorMessage = nil
+        
         DebugLogger.logUI("===== UI STATE RESET COMPLETED =====")
     }
     
@@ -535,24 +609,51 @@ class ConnectionMonitor: ObservableObject {
     }
     
     private func updateAllTrafficDataWithRetry() async {
-        // Update both devices concurrently if device 2 is enabled
-        if configuration.device2Enabled {
-            // Create task IDs on main actor
+        // Update all devices concurrently
+        if configuration.device2Enabled && configuration.lanEnabled {
+            // All three enabled
+            let taskId1 = UUID()
+            let taskId2 = UUID()
+            let taskId3 = UUID()
+            addActiveMonitoringTask(taskId1)
+            addActiveMonitoringTask(taskId2)
+            addActiveMonitoringTask(taskId3)
+            
+            async let update1: Void = updateTrafficDataWithRetry(for: 1, taskId: taskId1)
+            async let update2: Void = updateTrafficDataWithRetry(for: 2, taskId: taskId2)
+            async let update3: Void = updateLANTrafficDataWithRetry(taskId: taskId3)
+            
+            _ = await (update1, update2, update3)
+            cleanupTasks([taskId1, taskId2, taskId3])
+            
+        } else if configuration.device2Enabled {
+            // Device 1 and 2 enabled, LAN disabled
             let taskId1 = UUID()
             let taskId2 = UUID()
             addActiveMonitoringTask(taskId1)
             addActiveMonitoringTask(taskId2)
             
-            // Run updates concurrently
             async let update1: Void = updateTrafficDataWithRetry(for: 1, taskId: taskId1)
             async let update2: Void = updateTrafficDataWithRetry(for: 2, taskId: taskId2)
             
             _ = await (update1, update2)
-            
-            // Cleanup on main actor
             cleanupTasks([taskId1, taskId2])
+            
+        } else if configuration.lanEnabled {
+            // Device 1 and LAN enabled, Device 2 disabled
+            let taskId1 = UUID()
+            let taskId2 = UUID()
+            addActiveMonitoringTask(taskId1)
+            addActiveMonitoringTask(taskId2)
+            
+            async let update1: Void = updateTrafficDataWithRetry(for: 1, taskId: taskId1)
+            async let update2: Void = updateLANTrafficDataWithRetry(taskId: taskId2)
+            
+            _ = await (update1, update2)
+            cleanupTasks([taskId1, taskId2])
+            
         } else {
-            // Only update device 1
+            // Only device 1 enabled
             let taskId1 = UUID()
             addActiveMonitoringTask(taskId1)
             await updateTrafficDataWithRetry(for: 1, taskId: taskId1)
@@ -646,6 +747,58 @@ class ConnectionMonitor: ObservableObject {
             }
             
             DebugLogger.logError("Device \(deviceIndex) traffic update failed", error: error)
+        }
+    }
+    
+    private func updateLANTrafficDataWithRetry(taskId: UUID) async {
+        guard let lanMonitor = lanMonitor else {
+            lanErrorMessage = "LAN monitor not initialized"
+            return
+        }
+        
+        do {
+            let (upload, download, formattedUpload, formattedDownload) = try await lanMonitor.updateTrafficData()
+            
+            // Update UI on main actor
+            self.lanUploadSpeed = upload
+            self.lanDownloadSpeed = download
+            self.lanFormattedUploadSpeed = formattedUpload
+            self.lanFormattedDownloadSpeed = formattedDownload
+            self.lanErrorMessage = nil
+            
+            // Add to history only on history update cycles
+            if self.monitoringCycle % self.historyUpdateCycles == 0 {
+                HistoryManager.shared.addDataPoint(
+                    device: 3, // Use device 3 for LAN
+                    uploadSpeed: upload,
+                    downloadSpeed: download,
+                    latency: nil,
+                    packetLoss: nil
+                )
+            }
+            
+        } catch NetworkDiscoveryError.interfaceNotFound {
+            // Interface not found - could be temporarily down, keep showing last values
+            DebugLogger.logNetwork("LAN - Interface temporarily unavailable, keeping last values")
+            
+            // Don't clear the current values - just set a subtle error
+            // This prevents the "---" display when interface is temporarily down
+            self.lanErrorMessage = "Interface temporarily unavailable"
+            
+            // Try rediscovery after a few failures
+            if self.monitoringCycle % 5 == 0 {
+                DebugLogger.logNetwork("LAN - Attempting interface rediscovery")
+                Task {
+                    await self.discoverLANInterfaces()
+                }
+            }
+            
+        } catch {
+            let errorMessage = error.localizedDescription
+            DebugLogger.logError("LAN traffic update failed", error: error)
+            
+            // Keep last values instead of clearing them
+            self.lanErrorMessage = errorMessage
         }
     }
     

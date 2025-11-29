@@ -51,11 +51,23 @@ struct NetworkHistoryView: View {
     @State private var processingTask: Task<Void, Never>?
     
     private var allHistory: [NetworkDataPoint] {
-        deviceIndex == 1 ? historyManager.device1History : historyManager.device2History
+        if deviceIndex == 1 {
+            return historyManager.device1History
+        } else if deviceIndex == 2 {
+            return historyManager.device2History
+        } else {
+            return historyManager.lanHistory
+        }
     }
     
     private var deviceLabel: String {
-        deviceIndex == 1 ? configuration.device1Label : configuration.device2Label
+        if deviceIndex == 1 {
+            return configuration.device1Label
+        } else if deviceIndex == 2 {
+            return configuration.device2Label
+        } else {
+            return configuration.lanLabel
+        }
     }
     
     var body: some View {

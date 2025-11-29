@@ -59,6 +59,12 @@ struct SettingsView: View {
                             Label("\(configuration.device2Label) History", systemImage: "chart.xyaxis.line")
                         }
                     }
+                    
+                    if configuration.lanEnabled {
+                        NavigationLink(destination: NetworkHistoryView(deviceIndex: 3)) {
+                            Label("\(configuration.lanLabel) History", systemImage: "chart.xyaxis.line")
+                        }
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -141,6 +147,39 @@ struct SettingsView: View {
                     Text("Secondary Device")
                         .font(.headline)
                 }
+            }
+            
+            Section {
+                VStack(spacing: 12) {
+                    HStack {
+                        Toggle("Enable Local LAN Monitoring", isOn: $configuration.lanEnabled)
+                            .font(.headline)
+                        Spacer()
+                    }
+                    
+                    if configuration.lanEnabled {
+                        LANConfigurationCard(
+                            configuration: configuration,
+                            monitor: monitor,
+                            showInterfaceDiscovery: { showLANInterfaceDiscovery() }
+                        )
+                    } else {
+                        Text("Enable local LAN monitoring to track your Mac's network interface usage.")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            } header: {
+                HStack {
+                    Image(systemName: "network")
+                        .foregroundStyle(.green)
+                    Text("Local LAN Interface")
+                        .font(.headline)
+                }
+            } footer: {
+                Text("Monitor your Mac's local network interface without requiring SNMP. This tracks data from the system's built-in network statistics.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -402,6 +441,16 @@ struct SettingsView: View {
                             latency: monitor.device2FormattedLatency
                         )
                     }
+                    
+                    if configuration.lanEnabled {
+                        LANStatusCard(
+                            deviceName: configuration.lanLabel,
+                            interfaceName: configuration.lanInterfaceName,
+                            errorMessage: monitor.lanErrorMessage,
+                            uploadSpeed: monitor.lanFormattedUploadSpeed,
+                            downloadSpeed: monitor.lanFormattedDownloadSpeed
+                        )
+                    }
                 }
             } else {
                 ContentUnavailableView(
@@ -462,6 +511,33 @@ struct SettingsView: View {
         window.contentViewController = hostingController
         window.center()
         window.setFrameAutosaveName("InterfaceDiscovery")
+        window.isReleasedWhenClosed = false
+        
+        interfaceDiscoveryWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    private func showLANInterfaceDiscovery() {
+        // Close existing window if open
+        interfaceDiscoveryWindow?.close()
+        interfaceDiscoveryWindow = nil
+        
+        // Create new window
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        
+        let discoveryView = LANInterfaceDiscoveryView(monitor: monitor)
+        let hostingController = NSHostingController(rootView: discoveryView)
+        
+        window.title = "Local LAN Interface Discovery"
+        window.contentViewController = hostingController
+        window.center()
+        window.setFrameAutosaveName("LANInterfaceDiscovery")
         window.isReleasedWhenClosed = false
         
         interfaceDiscoveryWindow = window
@@ -654,6 +730,83 @@ struct DeviceStatusCard: View {
     }
 }
 
+// MARK: - LAN Status Card
+
+struct LANStatusCard: View {
+    let deviceName: String
+    let interfaceName: String
+    let errorMessage: String?
+    let uploadSpeed: (value: String, unit: String)
+    let downloadSpeed: (value: String, unit: String)
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(deviceName)
+                        .font(.headline)
+                    Text(interfaceName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                
+                Spacer()
+                
+                // Status indicator
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(errorMessage == nil ? Color.green : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(errorMessage == nil ? "Active" : "Error")
+                        .font(.caption)
+                        .foregroundStyle(errorMessage == nil ? .green : .red)
+                }
+            }
+            
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+            }
+            
+            // Metrics
+            HStack(spacing: 20) {
+                MetricView(
+                    title: "Upload",
+                    value: uploadSpeed.value,
+                    unit: uploadSpeed.unit,
+                    systemImage: "arrow.up"
+                )
+                
+                MetricView(
+                    title: "Download", 
+                    value: downloadSpeed.value,
+                    unit: downloadSpeed.unit,
+                    systemImage: "arrow.down"
+                )
+                
+                Spacer()
+                
+                HStack(spacing: 4) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Local Interface")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 // MARK: - Metric View
 
 struct MetricView: View {
@@ -821,5 +974,260 @@ struct LatencyColorSettingsCard: View {
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - LAN Configuration Card
+
+struct LANConfigurationCard: View {
+    @ObservedObject var configuration: NetworkConfiguration
+    @ObservedObject var monitor: ConnectionMonitor
+    let showInterfaceDiscovery: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            // LAN Label and Interface
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("LAN Label")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Label", text: $configuration.lanLabel)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Network Interface")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        TextField("en0", text: $configuration.lanInterfaceName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 150)
+                        
+                        Button {
+                            showInterfaceDiscovery()
+                        } label: {
+                            Label("Discover", systemImage: "magnifyingglass")
+                        }
+                        .help("Discover available network interfaces on this Mac")
+                    }
+                    Text("Tip: For bonded connections, use comma-separated names (e.g., \"en0, en1\")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .italic()
+                }
+            }
+            
+            // Currently Selected Interface Info
+            if monitor.lanAvailableInterfaces.isEmpty {
+                HStack {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.blue)
+                    Text("Click 'Discover' to find available network interfaces")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let selectedInterface = monitor.lanAvailableInterfaces.first(where: { $0.name == configuration.lanInterfaceName }) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Selected Interface:")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(selectedInterface.displayName)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    
+                    HStack(spacing: 12) {
+                        if let ipAddress = selectedInterface.ipAddress {
+                            Label(ipAddress, systemImage: "network")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Label(selectedInterface.isActive ? "Active" : "Inactive", 
+                              systemImage: selectedInterface.isActive ? "checkmark.circle" : "xmark.circle")
+                            .font(.caption2)
+                            .foregroundStyle(selectedInterface.isActive ? .green : .secondary)
+                    }
+                }
+                .padding(.horizontal)
+            } else if !configuration.lanInterfaceName.isEmpty {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text("Interface '\(configuration.lanInterfaceName)' not found. Click 'Discover' to find available interfaces.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - LAN Interface Discovery View
+
+struct LANInterfaceDiscoveryView: View {
+    @ObservedObject var monitor: ConnectionMonitor
+    @State private var isDiscovering = false
+    @State private var selectedInterface: LocalInterface?
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Discover Local Network Interfaces")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Text("Select the network interface you want to monitor")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                
+                Button {
+                    discoverInterfaces()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(isDiscovering)
+            }
+            .padding()
+            
+            Divider()
+            
+            // Interface List
+            if isDiscovering {
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                    Text("Discovering network interfaces...")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if monitor.lanAvailableInterfaces.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "network.slash")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.secondary)
+                    Text("No network interfaces found")
+                        .font(.headline)
+                    Text("Click 'Refresh' to discover interfaces")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(monitor.lanAvailableInterfaces, selection: $selectedInterface) { interface in
+                    LANInterfaceRow(interface: interface)
+                        .tag(interface)
+                }
+            }
+            
+            Divider()
+            
+            // Footer with action buttons
+            HStack {
+                Button("Cancel") {
+                    dismiss()
+                }
+                
+                Spacer()
+                
+                Button("Use Selected Interface") {
+                    if let selectedInterface = selectedInterface {
+                        NetworkConfiguration.shared.lanInterfaceName = selectedInterface.name
+                        NetworkConfiguration.shared.saveConfiguration()
+                        dismiss()
+                    }
+                }
+                .disabled(selectedInterface == nil)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(minWidth: 700, minHeight: 600)
+        .onAppear {
+            discoverInterfaces()
+        }
+    }
+    
+    private func discoverInterfaces() {
+        isDiscovering = true
+        
+        Task {
+            await monitor.discoverLANInterfaces()
+            
+            await MainActor.run {
+                isDiscovering = false
+                
+                // Pre-select current interface if it exists
+                if let currentInterfaceName = NetworkConfiguration.shared.lanInterfaceName.isEmpty ? nil : NetworkConfiguration.shared.lanInterfaceName,
+                   let current = monitor.lanAvailableInterfaces.first(where: { $0.name == currentInterfaceName }) {
+                    selectedInterface = current
+                } else if let firstActive = monitor.lanAvailableInterfaces.first(where: { $0.isActive }) {
+                    // Otherwise select the first active interface
+                    selectedInterface = firstActive
+                }
+            }
+        }
+    }
+}
+
+struct LANInterfaceRow: View {
+    let interface: LocalInterface
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Status indicator
+            Circle()
+                .fill(interface.isActive ? Color.green : Color.secondary)
+                .frame(width: 12, height: 12)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(interface.displayName)
+                        .font(.headline)
+                    
+                    Text("(\(interface.name))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    if interface.isActive {
+                        Text("ACTIVE")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.2), in: Capsule())
+                    }
+                }
+                
+                if let ipAddress = interface.ipAddress {
+                    HStack(spacing: 8) {
+                        Image(systemName: "network")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(ipAddress)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            
+            Spacer()
+        }
+        .padding(.vertical, 4)
     }
 }

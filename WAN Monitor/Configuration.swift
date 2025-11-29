@@ -42,6 +42,11 @@ class NetworkConfiguration: ObservableObject {
     @Published var device2InterfaceName = ""
     @Published var device2Enabled = true
     
+    // Local LAN Interface Settings
+    @Published var lanEnabled = false
+    @Published var lanLabel = "LAN"
+    @Published var lanInterfaceName = "en0"
+    
     // Ping targets
     @Published var pingHost1 = "8.8.8.8"
     @Published var pingHost2 = "1.1.1.1"
@@ -104,6 +109,12 @@ class NetworkConfiguration: ObservableObject {
         defaults.set(device2InterfaceName, forKey: "device2InterfaceName")
         defaults.set(device2Enabled, forKey: "device2Enabled")
         DebugLogger.logConfig("Saved Device 2 - Host: \(device2Host), Label: \(device2Label), Interface: '\(device2InterfaceName)', Enabled: \(device2Enabled)")
+        
+        // LAN Interface
+        defaults.set(lanEnabled, forKey: "lanEnabled")
+        defaults.set(lanLabel, forKey: "lanLabel")
+        defaults.set(lanInterfaceName, forKey: "lanInterfaceName")
+        DebugLogger.logConfig("Saved LAN - Label: \(lanLabel), Interface: '\(lanInterfaceName)', Enabled: \(lanEnabled)")
         
         // Ping hosts
         defaults.set(pingHost1, forKey: "pingHost1")
@@ -201,6 +212,19 @@ class NetworkConfiguration: ObservableObject {
         // Device 2 enabled state - defaults to true for existing configurations
         if defaults.object(forKey: "device2Enabled") != nil {
             device2Enabled = defaults.bool(forKey: "device2Enabled")
+        }
+        
+        // LAN Interface
+        if defaults.object(forKey: "lanEnabled") != nil {
+            lanEnabled = defaults.bool(forKey: "lanEnabled")
+        }
+        
+        if let label = defaults.object(forKey: "lanLabel") as? String {
+            lanLabel = label
+        }
+        
+        if let interfaceName = defaults.object(forKey: "lanInterfaceName") as? String {
+            lanInterfaceName = interfaceName
         }
         
         // Ping hosts and other settings

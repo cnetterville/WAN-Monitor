@@ -217,7 +217,7 @@ final class DeviceMonitor: Sendable {
     private let ifHCOutOctetsOID = "1.3.6.1.2.1.31.1.1.1.10" // 64-bit counter
     
     // Smoothing
-    private let smoothingFactor: Double = 0.9
+    private let smoothingFactor: Double = 0.7  // Reduced from 0.9 for more responsive updates
     
     init(deviceIndex: Int, host: String, community: String, port: Int, label: String, interfaceName: String, pingHost: String) {
         self.deviceIndex = deviceIndex

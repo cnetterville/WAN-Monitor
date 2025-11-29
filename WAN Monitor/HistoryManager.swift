@@ -33,6 +33,7 @@ class HistoryManager: ObservableObject {
     // Published arrays for SwiftUI observation
     @Published var device1History: [NetworkDataPoint] = []
     @Published var device2History: [NetworkDataPoint] = []
+    @Published var lanHistory: [NetworkDataPoint] = []
     
     // Configuration - dynamically calculated based on user settings
     private var maxDataPoints: Int {
@@ -84,15 +85,22 @@ class HistoryManager: ObservableObject {
                 let trimCount = device1History.count - maxDataPoints
                 device1History.removeFirst(trimCount)
             }
-        } else {
+        } else if device == 2 {
             device2History.append(dataPoint)
             if device2History.count > maxDataPoints + 100 {
                 let trimCount = device2History.count - maxDataPoints
                 device2History.removeFirst(trimCount)
             }
+        } else if device == 3 {
+            // LAN device
+            lanHistory.append(dataPoint)
+            if lanHistory.count > maxDataPoints + 100 {
+                let trimCount = lanHistory.count - maxDataPoints
+                lanHistory.removeFirst(trimCount)
+            }
         }
         
-        if (device1History.count + device2History.count) % 20 == 0 {
+        if (device1History.count + device2History.count + lanHistory.count) % 20 == 0 {
             saveHistoryAsync()
         }
     }
@@ -101,12 +109,15 @@ class HistoryManager: ObservableObject {
         if let device = device {
             if device == 1 {
                 device1History.removeAll()
-            } else {
+            } else if device == 2 {
                 device2History.removeAll()
+            } else if device == 3 {
+                lanHistory.removeAll()
             }
         } else {
             device1History.removeAll()
             device2History.removeAll()
+            lanHistory.removeAll()
         }
         saveHistoryAsync()
     }
@@ -114,7 +125,18 @@ class HistoryManager: ObservableObject {
     // MARK: - Statistics
     
     func getStatistics(device: Int, filteredHistory: [NetworkDataPoint]? = nil) -> NetworkStatistics {
-        let history = filteredHistory ?? (device == 1 ? device1History : device2History)
+        let history: [NetworkDataPoint]
+        if let filteredHistory = filteredHistory {
+            history = filteredHistory
+        } else {
+            if device == 1 {
+                history = device1History
+            } else if device == 2 {
+                history = device2History
+            } else {
+                history = lanHistory
+            }
+        }
         
         guard !history.isEmpty else {
             return NetworkStatistics()
@@ -168,6 +190,12 @@ class HistoryManager: ObservableObject {
             device2History.removeFirst(trimCount)
             DebugLogger.log("Cleaned up \(trimCount) old data points from Device 2 history", category: "HISTORY")
         }
+        
+        if lanHistory.count > maxPoints {
+            let trimCount = lanHistory.count - maxPoints
+            lanHistory.removeFirst(trimCount)
+            DebugLogger.log("Cleaned up \(trimCount) old data points from LAN history", category: "HISTORY")
+        }
     }
     
     // MARK: - Persistence
@@ -178,12 +206,14 @@ class HistoryManager: ObservableObject {
             
             let device1Copy = self.device1History
             let device2Copy = self.device2History
+            let lanCopy = self.lanHistory
             let url = self.persistenceURL
             
             // Encode on main actor
             let data = HistoryData(
                 device1History: device1Copy,
-                device2History: device2Copy
+                device2History: device2Copy,
+                lanHistory: lanCopy
             )
             
             let encoder = JSONEncoder()
@@ -210,7 +240,8 @@ class HistoryManager: ObservableObject {
         
         let data = HistoryData(
             device1History: device1History,
-            device2History: device2History
+            device2History: device2History,
+            lanHistory: lanHistory
         )
         
         do {
@@ -256,10 +287,12 @@ class HistoryManager: ObservableObject {
                         
                         let device1Filtered = data.device1History.filter { $0.timestamp >= cutoffDate }
                         let device2Filtered = data.device2History.filter { $0.timestamp >= cutoffDate }
+                        let lanFiltered = data.lanHistory.filter { $0.timestamp >= cutoffDate }
                         
                         self.device1History = device1Filtered
                         self.device2History = device2Filtered
-                        DebugLogger.logConfig("Loaded history (keeping last \(cutoffHours)h): Device 1: \(device1Filtered.count) points, Device 2: \(device2Filtered.count) points")
+                        self.lanHistory = lanFiltered
+                        DebugLogger.logConfig("Loaded history (keeping last \(cutoffHours)h): Device 1: \(device1Filtered.count) points, Device 2: \(device2Filtered.count) points, LAN: \(lanFiltered.count) points")
                     } catch {
                         DebugLogger.logError("Failed to decode history", error: error)
                     }
@@ -279,6 +312,14 @@ class HistoryManager: ObservableObject {
 struct HistoryData: Codable, @unchecked Sendable {
     let device1History: [NetworkDataPoint]
     let device2History: [NetworkDataPoint]
+    let lanHistory: [NetworkDataPoint]
+    
+    // Add initializer with default for backward compatibility
+    init(device1History: [NetworkDataPoint], device2History: [NetworkDataPoint], lanHistory: [NetworkDataPoint] = []) {
+        self.device1History = device1History
+        self.device2History = device2History
+        self.lanHistory = lanHistory
+    }
 }
 
 struct NetworkStatistics {
