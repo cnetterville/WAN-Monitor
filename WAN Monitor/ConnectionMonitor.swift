@@ -37,7 +37,11 @@ class ConnectionMonitor: ObservableObject {
     // Device uptime and reboot detection
     @Published var device1DeviceUptime: String = "-"
     @Published var device1RebootDetected: Bool = false
-    
+
+    // Jitter and connectivity
+    @Published var device1FormattedJitter: String = "-"
+    @Published var device1ConnectivityStatus: String = ""
+
     // Computed property to prevent accidental clearing of interfaces
     var device1AvailableInterfaces: [NetworkInterface] {
         get { _device1AvailableInterfaces }
@@ -74,7 +78,11 @@ class ConnectionMonitor: ObservableObject {
     // Device uptime and reboot detection
     @Published var device2DeviceUptime: String = "-"
     @Published var device2RebootDetected: Bool = false
-    
+
+    // Jitter and connectivity
+    @Published var device2FormattedJitter: String = "-"
+    @Published var device2ConnectivityStatus: String = ""
+
     // Computed property to prevent accidental clearing of interfaces
     var device2AvailableInterfaces: [NetworkInterface] {
         get { _device2AvailableInterfaces }
@@ -601,6 +609,8 @@ class ConnectionMonitor: ObservableObject {
         device1DownloadUtilization = nil
         device1DeviceUptime = "-"
         device1RebootDetected = false
+        device1FormattedJitter = "-"
+        device1ConnectivityStatus = ""
         
         device2UploadSpeed = 0.0
         device2DownloadSpeed = 0.0
@@ -619,6 +629,8 @@ class ConnectionMonitor: ObservableObject {
         device2DownloadUtilization = nil
         device2DeviceUptime = "-"
         device2RebootDetected = false
+        device2FormattedJitter = "-"
+        device2ConnectivityStatus = ""
         
         lanUploadSpeed = 0.0
         lanDownloadSpeed = 0.0
@@ -635,18 +647,16 @@ class ConnectionMonitor: ObservableObject {
         // Cancel any existing monitoring task
         monitoringTask?.cancel()
         
-        let updateInterval = configuration.updateInterval
-        
-        DebugLogger.logNetwork("Starting consolidated monitoring with interval: \(updateInterval)s")
+        DebugLogger.logNetwork("Starting consolidated monitoring with interval: \(configuration.updateInterval)s")
         
         // Create a new monitoring task using structured concurrency
         monitoringTask = Task { @MainActor in
             while !Task.isCancelled && isMonitoring {
                 await performConsolidatedUpdate()
                 
-                // Sleep for the update interval
+                // Read updateInterval fresh each cycle so slider changes take effect immediately
                 do {
-                    try await Task.sleep(for: .seconds(updateInterval))
+                    try await Task.sleep(for: .seconds(configuration.updateInterval))
                 } catch {
                     // Task was cancelled
                     break
@@ -917,9 +927,8 @@ class ConnectionMonitor: ObservableObject {
     private func updateLatencyWithRetry(for deviceIndex: Int, taskId: UUID) async {
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         
-        let (latency, formatted, packetsSent, packetsReceived, packetLoss, formattedLoss) = await monitor.updateLatency(taskId: taskId)
+        let (latency, formatted, packetsSent, packetsReceived, packetLoss, formattedLoss, formattedJitter, connectivityStatus) = await monitor.updateLatency(taskId: taskId)
         
-        // Update UI on main actor
         if deviceIndex == 1 {
             self.device1Latency = latency
             self.device1FormattedLatency = formatted
@@ -927,6 +936,8 @@ class ConnectionMonitor: ObservableObject {
             self.device1PacketsReceived = packetsReceived
             self.device1PacketLoss = packetLoss
             self.device1FormattedPacketLoss = formattedLoss
+            self.device1FormattedJitter = formattedJitter
+            self.device1ConnectivityStatus = connectivityStatus
         } else {
             self.device2Latency = latency
             self.device2FormattedLatency = formatted
@@ -934,6 +945,8 @@ class ConnectionMonitor: ObservableObject {
             self.device2PacketsReceived = packetsReceived
             self.device2PacketLoss = packetLoss
             self.device2FormattedPacketLoss = formattedLoss
+            self.device2FormattedJitter = formattedJitter
+            self.device2ConnectivityStatus = connectivityStatus
         }
     }
     

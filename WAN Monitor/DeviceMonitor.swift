@@ -165,6 +165,38 @@ private actor DeviceMonitorState {
         smoothedDownloadSpeed = 0.0
     }
     
+    // Rolling ping window for meaningful packet loss (last 20 pings)
+    private var pingHistory: [Bool] = []
+    private let pingWindowSize = 20
+
+    // Rolling latency window for jitter (mean absolute deviation)
+    private var latencyHistory: [Double] = []
+    private let latencyWindowSize = 20
+
+    /// Records a latency sample and returns a formatted jitter string (e.g. "±2.3ms"),
+    /// or "-" if fewer than 3 samples have been collected yet.
+    func recordLatencyAndGetJitter(_ latency: Double?) -> String {
+        guard let l = latency else { return "-" }
+        latencyHistory.append(l)
+        if latencyHistory.count > latencyWindowSize { latencyHistory.removeFirst() }
+        guard latencyHistory.count >= 3 else { return "-" }
+        let mean = latencyHistory.reduce(0, +) / Double(latencyHistory.count)
+        let mad = latencyHistory.map { abs($0 - mean) }.reduce(0, +) / Double(latencyHistory.count)
+        return String(format: "±%.1f", mad)
+    }
+
+    /// Records a ping result and returns the rolling loss % over the last N pings.
+    func recordPingResult(_ success: Bool) -> Double {
+        pingHistory.append(success)
+        if pingHistory.count > pingWindowSize {
+            pingHistory.removeFirst()
+        }
+        let failures = pingHistory.filter { !$0 }.count
+        return Double(failures) / Double(pingHistory.count) * 100.0
+    }
+
+    func pingWindowCount() -> Int { pingHistory.count }
+
     // Uptime tracking for reboot detection
     var lastKnownUptime: UInt64?
     var rebootDetectedAt: Date?
@@ -194,6 +226,8 @@ private actor DeviceMonitorState {
         cachedInterfaces = []
         lastKnownUptime = nil
         rebootDetectedAt = nil
+        pingHistory = []
+        latencyHistory = []
     }
     
     func getInterfaceIndex() -> Int? {
@@ -646,105 +680,78 @@ final class DeviceMonitor: Sendable {
         }
     }
     
-    // MARK: - Latency and Packet Loss Update
-    
-    func updateLatency(taskId: UUID = UUID()) async -> (latency: Double?, formatted: String, packetsSent: Int, packetsReceived: Int, packetLoss: Double, formattedLoss: String) {
-        let host = pingHost.isEmpty ? "8.8.8.8" : pingHost
-        
-        do {
-            let result = try await withThrowingTaskGroup(of: (Double?, String, Int, Int, Double, String).self) { group in
-                group.addTask {
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-                    // 1 packet, 2s timeout — fast enough for 1s update interval
-                    process.arguments = ["-c", "1", "-t", "2", host]
-                    let pipe = Pipe()
-                    process.standardOutput = pipe
-                    
-                    let timeoutTask = Task {
-                        try await Task.sleep(nanoseconds: 4_000_000_000)
-                        process.terminate()
-                    }
-                    
-                    try process.run()
-                    process.waitUntilExit()
-                    timeoutTask.cancel()
-                    
-                    if process.terminationStatus == 0 {
-                        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                        let output = String(data: data, encoding: .utf8) ?? ""
-                        
-                        var latencyValue: Double? = nil
-                        var packetsSent = 0
-                        var packetsReceived = 0
-                        var lossPercentage = 0.0
-                        
-                        // Parse latency from lines like "time=14.2 ms"
-                        if let timeRange = output.range(of: "time=") {
-                            let timeString = String(output[timeRange.upperBound...])
-                            if let timeEnd = timeString.firstIndex(of: " "),
-                               let latency = Double(String(timeString[..<timeEnd])) {
-                                latencyValue = latency
-                            }
-                        }
-                        
-                        // Parse packet statistics from line like "3 packets transmitted, 3 packets received, 0.0% packet loss"
-                        let lines = output.components(separatedBy: .newlines)
-                        for line in lines {
-                            // Look for the statistics line
-                            if line.contains("packets transmitted") {
-                                // Pattern: "X packets transmitted, Y packets received"
-                                let components = line.components(separatedBy: ",")
-                                
-                                // Extract transmitted count
-                                if let transmittedPart = components.first {
-                                    let words = transmittedPart.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                                    if let count = words.first, let transmitted = Int(count) {
-                                        packetsSent = transmitted
-                                    }
-                                }
-                                
-                                // Extract received count
-                                if components.count > 1 {
-                                    let receivedPart = components[1]
-                                    let words = receivedPart.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                                    if let count = words.first, let received = Int(count) {
-                                        packetsReceived = received
-                                    }
-                                }
-                                
-                                // Extract packet loss percentage
-                                if components.count > 2 {
-                                    let lossPart = components[2]
-                                    if let percentRange = lossPart.range(of: "%") {
-                                        let lossString = lossPart[..<percentRange.lowerBound].trimmingCharacters(in: .whitespaces)
-                                        if let loss = Double(lossString) {
-                                            lossPercentage = loss
-                                        }
-                                    }
-                                }
-                                break
-                            }
-                        }
-                        
-                        let formattedLatency = latencyValue.map { String(format: "%.1f", $0) } ?? "-"
-                        let formattedLoss = packetsSent > 0 ? String(format: "%.0f%%", lossPercentage) : "-"
-                        
-                        return (latencyValue, formattedLatency, packetsSent, packetsReceived, lossPercentage, formattedLoss)
-                    }
-                    return (nil as Double?, "-", 0, 0, 0.0, "-")
+    // MARK: - Latency, Jitter, and Packet Loss Update
+
+    /// Pings a single host and returns its latency if reachable.
+    private func pingTarget(_ target: String) async -> Double? {
+        await withCheckedContinuation { continuation in
+            Task.detached(priority: .utility) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/sbin/ping")
+                process.arguments = ["-c", "1", "-t", "2", target]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = Pipe()
+
+                let timeoutTask = Task {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    if process.isRunning { process.terminate() }
                 }
-                
-                let result = try await group.next()!
-                group.cancelAll()
-                return result
+
+                do { try process.run() } catch {
+                    timeoutTask.cancel()
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                process.waitUntilExit()
+                timeoutTask.cancel()
+
+                guard process.terminationStatus == 0 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                var latency: Double? = nil
+                if let r = output.range(of: "time=") {
+                    let after = String(output[r.upperBound...])
+                    if let end = after.firstIndex(of: " "), let ms = Double(String(after[..<end])) {
+                        latency = ms
+                    }
+                }
+                continuation.resume(returning: latency)
             }
-            
-            return result
-            
-        } catch {
-            return (nil as Double?, "-", 0, 0, 0.0, "-")
         }
+    }
+
+    func updateLatency(taskId: UUID = UUID()) async -> (latency: Double?, formatted: String, packetsSent: Int, packetsReceived: Int, packetLoss: Double, formattedLoss: String, formattedJitter: String, connectivityStatus: String) {
+        let externalHost = pingHost.isEmpty ? "8.8.8.8" : pingHost
+
+        // Ping router (gateway) and external host in parallel
+        async let externalLatency = pingTarget(externalHost)
+        async let gatewayLatency  = pingTarget(host)
+        let (external, gateway) = await (externalLatency, gatewayLatency)
+
+        // Connectivity classification
+        let connectivityStatus: String
+        switch (gateway != nil, external != nil) {
+        case (true,  false): connectivityStatus = "ISP ↓"
+        case (false, false): connectivityStatus = "GW ↓"
+        default:             connectivityStatus = ""
+        }
+
+        // Latency from external host (primary metric)
+        let latencyValue = external
+        let formattedLatency = latencyValue.map { String(format: "%.1f", $0) } ?? "-"
+
+        // Rolling packet loss and jitter
+        let rollingLoss   = await state.recordPingResult(external != nil)
+        let windowCount   = await state.pingWindowCount()
+        let formattedLoss = windowCount >= 3 ? String(format: "%.0f%%", rollingLoss) : "-"
+        let formattedJitter = await state.recordLatencyAndGetJitter(latencyValue)
+
+        return (latencyValue, formattedLatency, 1, external != nil ? 1 : 0, rollingLoss, formattedLoss, formattedJitter, connectivityStatus)
     }
 
     // MARK: - Interface Speed and Utilization

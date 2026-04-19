@@ -222,20 +222,20 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
             
             // Add last update time
             let timeAgo = formatTimeAgo(lastDataUpdateTime)
-            let lastUpdateItem = NSMenuItem(title: "    Last updated: \(timeAgo)", action: nil, keyEquivalent: "")
-            lastUpdateItem.isEnabled = false
-            menu.addItem(lastUpdateItem)
+            menu.addItem(infoMenuItem("    Last updated: \(timeAgo)"))
             
             menu.addItem(NSMenuItem.separator())
             
             // Add detailed status for each device
-            addDeviceStatusMenuItem(to: menu, label: config.device1Label, 
+            addDeviceStatusMenuItem(to: menu, label: config.device1Label,
                                    upload: monitor.device1FormattedUploadSpeed,
                                    download: monitor.device1FormattedDownloadSpeed,
                                    latency: monitor.device1FormattedLatency,
+                                   jitter: monitor.device1FormattedJitter,
                                    packetLoss: monitor.device1FormattedPacketLoss,
                                    uptime: monitor.device1DeviceUptime,
                                    rebootDetected: monitor.device1RebootDetected,
+                                   connectivityStatus: monitor.device1ConnectivityStatus,
                                    error: monitor.device1ErrorMessage)
             
             if config.device2Enabled {
@@ -243,9 +243,11 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
                                        upload: monitor.device2FormattedUploadSpeed,
                                        download: monitor.device2FormattedDownloadSpeed,
                                        latency: monitor.device2FormattedLatency,
+                                       jitter: monitor.device2FormattedJitter,
                                        packetLoss: monitor.device2FormattedPacketLoss,
                                        uptime: monitor.device2DeviceUptime,
                                        rebootDetected: monitor.device2RebootDetected,
+                                       connectivityStatus: monitor.device2ConnectivityStatus,
                                        error: monitor.device2ErrorMessage)
             }
             
@@ -305,9 +307,7 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
             
         } else {
-            let notMonitoringItem = NSMenuItem(title: "Not monitoring", action: nil, keyEquivalent: "")
-            notMonitoringItem.isEnabled = false
-            menu.addItem(notMonitoringItem)
+            menu.addItem(infoMenuItem("Not monitoring"))
         }
         
         menu.addItem(NSMenuItem.separator())
@@ -385,50 +385,51 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
     
-    private func addDeviceStatusMenuItem(to menu: NSMenu, label: String, 
+    /// Creates a non-interactive menu item with full-brightness text (not grayed).
+    private func infoMenuItem(_ text: String, bold: Bool = false) -> NSMenuItem {
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        let font: NSFont = bold ? .boldSystemFont(ofSize: 0)
+                                : .menuFont(ofSize: 0)
+        item.attributedTitle = NSAttributedString(string: text, attributes: [
+            .foregroundColor: NSColor.labelColor,
+            .font: font
+        ])
+        item.isEnabled = false
+        return item
+    }
+
+    private func addDeviceStatusMenuItem(to menu: NSMenu, label: String,
                                         upload: (value: String, unit: String),
                                         download: (value: String, unit: String),
                                         latency: String,
+                                        jitter: String,
                                         packetLoss: String,
                                         uptime: String,
                                         rebootDetected: Bool,
+                                        connectivityStatus: String,
                                         error: String?) {
         let indent = "    "
         if let error = error {
-            let item = NSMenuItem(title: "\(indent)\(label): \(error)", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
+            menu.addItem(infoMenuItem("\(indent)\(label): \(error)"))
         } else {
+            let latencyStr = jitter == "-" ? "\(latency)" : "\(latency) \(jitter)ms"
             let uptimeSuffix = uptime == "-" ? "" : " | Up: \(uptime)\(rebootDetected ? " ⚠" : "")"
-            let statusText = String(format: "%@%@: ↓%@ %@ ↑%@ %@ | %@ ms | Loss: %@%@",
-                                   indent, label,
-                                   download.value, download.unit,
-                                   upload.value, upload.unit,
-                                   latency, packetLoss,
-                                   uptimeSuffix)
-            let item = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
+            let connectSuffix = connectivityStatus.isEmpty ? "" : " | \(connectivityStatus)"
+            let statusText = "\(indent)\(label): ↓\(download.value) \(download.unit) ↑\(upload.value) \(upload.unit) | \(latencyStr) ms | Loss: \(packetLoss)\(uptimeSuffix)\(connectSuffix)"
+            menu.addItem(infoMenuItem(statusText))
         }
     }
-    
+
     private func addLANStatusMenuItem(to menu: NSMenu, label: String,
                                      upload: (value: String, unit: String),
                                      download: (value: String, unit: String),
                                      error: String?) {
         let indent = "    "
         if let error = error {
-            let item = NSMenuItem(title: "\(indent)\(label): \(error)", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
+            menu.addItem(infoMenuItem("\(indent)\(label): \(error)"))
         } else {
-            let statusText = String(format: "%@%@: ↓%@ %@ ↑%@ %@",
-                                   indent, label,
-                                   download.value, download.unit,
-                                   upload.value, upload.unit)
-            let item = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
+            let statusText = "\(indent)\(label): ↓\(download.value) \(download.unit) ↑\(upload.value) \(upload.unit)"
+            menu.addItem(infoMenuItem(statusText))
         }
     }
     
