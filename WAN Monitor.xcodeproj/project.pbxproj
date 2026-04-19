@@ -9,11 +9,29 @@
 /* Begin PBXBuildFile section */
 		E934EEA12ED26AE8004907D5 /* NetworkPathMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */; };
 		E945D6FA2E7A4F0D006D9479 /* SwiftSnmpKit in Frameworks */ = {isa = PBXBuildFile; productRef = E945D6F92E7A4F0D006D9479 /* SwiftSnmpKit */; };
+		E99790912EF9FFD1009FBC3B /* SNMP_METRICS_UPDATE.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790902EF9FFD1009FBC3B /* SNMP_METRICS_UPDATE.md */; };
+		E99790932EFA00FF009FBC3B /* SNMP_METRICS_FIXES.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790922EFA00FF009FBC3B /* SNMP_METRICS_FIXES.md */; };
+		E99790952EFA013A009FBC3B /* SNMP_METRICS_COMPLETE.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790942EFA013A009FBC3B /* SNMP_METRICS_COMPLETE.md */; };
+		E99790972EFA0152009FBC3B /* QUICK_START_METRICS.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790962EFA0152009FBC3B /* QUICK_START_METRICS.md */; };
+		E99790992EFA028E009FBC3B /* CANCELLATION_AND_UPTIME_FIXES.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790982EFA028E009FBC3B /* CANCELLATION_AND_UPTIME_FIXES.md */; };
+		E997909B2EFA0424009FBC3B /* SYSTEM_UPTIME_REMOVED.md in Resources */ = {isa = PBXBuildFile; fileRef = E997909A2EFA0424009FBC3B /* SYSTEM_UPTIME_REMOVED.md */; };
+		E997909D2EFA0503009FBC3B /* SETTINGS_NO_RESTART.md in Resources */ = {isa = PBXBuildFile; fileRef = E997909C2EFA0503009FBC3B /* SETTINGS_NO_RESTART.md */; };
+		E997909F2EFA05F9009FBC3B /* SETTINGS_NO_DISRUPTION.md in Resources */ = {isa = PBXBuildFile; fileRef = E997909E2EFA05F9009FBC3B /* SETTINGS_NO_DISRUPTION.md */; };
+		E99790A12EFA06B3009FBC3B /* SETTINGS_OBSERVER_SUSPENSION.md in Resources */ = {isa = PBXBuildFile; fileRef = E99790A02EFA06B3009FBC3B /* SETTINGS_OBSERVER_SUSPENSION.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkPathMonitor.swift; sourceTree = "<group>"; };
 		E945D6EA2E7A4E21006D9479 /* WAN Monitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WAN Monitor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E99790902EF9FFD1009FBC3B /* SNMP_METRICS_UPDATE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SNMP_METRICS_UPDATE.md; sourceTree = "<group>"; };
+		E99790922EFA00FF009FBC3B /* SNMP_METRICS_FIXES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SNMP_METRICS_FIXES.md; sourceTree = "<group>"; };
+		E99790942EFA013A009FBC3B /* SNMP_METRICS_COMPLETE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SNMP_METRICS_COMPLETE.md; sourceTree = "<group>"; };
+		E99790962EFA0152009FBC3B /* QUICK_START_METRICS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = QUICK_START_METRICS.md; sourceTree = "<group>"; };
+		E99790982EFA028E009FBC3B /* CANCELLATION_AND_UPTIME_FIXES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CANCELLATION_AND_UPTIME_FIXES.md; sourceTree = "<group>"; };
+		E997909A2EFA0424009FBC3B /* SYSTEM_UPTIME_REMOVED.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SYSTEM_UPTIME_REMOVED.md; sourceTree = "<group>"; };
+		E997909C2EFA0503009FBC3B /* SETTINGS_NO_RESTART.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SETTINGS_NO_RESTART.md; sourceTree = "<group>"; };
+		E997909E2EFA05F9009FBC3B /* SETTINGS_NO_DISRUPTION.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SETTINGS_NO_DISRUPTION.md; sourceTree = "<group>"; };
+		E99790A02EFA06B3009FBC3B /* SETTINGS_OBSERVER_SUSPENSION.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = SETTINGS_OBSERVER_SUSPENSION.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -42,6 +60,15 @@
 				E945D6EC2E7A4E21006D9479 /* WAN Monitor */,
 				E945D6EB2E7A4E21006D9479 /* Products */,
 				E934EEA02ED26AE8004907D5 /* NetworkPathMonitor.swift */,
+				E99790902EF9FFD1009FBC3B /* SNMP_METRICS_UPDATE.md */,
+				E99790922EFA00FF009FBC3B /* SNMP_METRICS_FIXES.md */,
+				E99790942EFA013A009FBC3B /* SNMP_METRICS_COMPLETE.md */,
+				E99790962EFA0152009FBC3B /* QUICK_START_METRICS.md */,
+				E99790982EFA028E009FBC3B /* CANCELLATION_AND_UPTIME_FIXES.md */,
+				E997909A2EFA0424009FBC3B /* SYSTEM_UPTIME_REMOVED.md */,
+				E997909C2EFA0503009FBC3B /* SETTINGS_NO_RESTART.md */,
+				E997909E2EFA05F9009FBC3B /* SETTINGS_NO_DISRUPTION.md */,
+				E99790A02EFA06B3009FBC3B /* SETTINGS_OBSERVER_SUSPENSION.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -121,6 +148,15 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E997909B2EFA0424009FBC3B /* SYSTEM_UPTIME_REMOVED.md in Resources */,
+				E99790A12EFA06B3009FBC3B /* SETTINGS_OBSERVER_SUSPENSION.md in Resources */,
+				E99790992EFA028E009FBC3B /* CANCELLATION_AND_UPTIME_FIXES.md in Resources */,
+				E99790912EF9FFD1009FBC3B /* SNMP_METRICS_UPDATE.md in Resources */,
+				E997909F2EFA05F9009FBC3B /* SETTINGS_NO_DISRUPTION.md in Resources */,
+				E99790952EFA013A009FBC3B /* SNMP_METRICS_COMPLETE.md in Resources */,
+				E99790932EFA00FF009FBC3B /* SNMP_METRICS_FIXES.md in Resources */,
+				E99790972EFA0152009FBC3B /* QUICK_START_METRICS.md in Resources */,
+				E997909D2EFA0503009FBC3B /* SETTINGS_NO_RESTART.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

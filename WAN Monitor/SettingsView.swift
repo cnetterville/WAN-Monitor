@@ -7,10 +7,16 @@
 
 import SwiftUI
 
+private enum SettingsPage: Hashable {
+    case devices, monitoring, status, device1History, device2History, lanHistory
+}
+
 struct SettingsView: View {
     @ObservedObject var configuration = NetworkConfiguration.shared
     @ObservedObject var monitor: ConnectionMonitor
     let onClose: () -> Void
+    
+    @State private var selectedPage: SettingsPage? = .devices
     
     @State private var showingDevice1InterfaceDiscovery = false
     @State private var showingDevice2InterfaceDiscovery = false
@@ -18,6 +24,22 @@ struct SettingsView: View {
     
     @State private var showAdvancedSettings = false
     @State private var showClearHistoryConfirmation = false
+    
+    // Track if changes require restart
+    @State private var needsRestart = false
+    
+    // Store original values to detect changes
+    @State private var originalDevice1Host = ""
+    @State private var originalDevice1Community = ""
+    @State private var originalDevice1Port = 0
+    @State private var originalDevice1InterfaceName = ""
+    @State private var originalDevice2Host = ""
+    @State private var originalDevice2Community = ""
+    @State private var originalDevice2Port = 0
+    @State private var originalDevice2InterfaceName = ""
+    @State private var originalDevice2Enabled = false
+    @State private var originalLanInterfaceName = ""
+    @State private var originalLanEnabled = false
     
     private var estimatedDataPoints: Int {
         let retentionSeconds = configuration.historyRetentionMinutes * 60
@@ -36,32 +58,32 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             // Sidebar
-            List {
-                NavigationLink(destination: DevicesSettingsView()) {
+            List(selection: $selectedPage) {
+                NavigationLink(value: SettingsPage.devices) {
                     Label("Devices", systemImage: "shield")
                 }
                 
-                NavigationLink(destination: MonitoringSettingsView()) {
+                NavigationLink(value: SettingsPage.monitoring) {
                     Label("Monitoring", systemImage: "chart.line.uptrend.xyaxis")
                 }
                 
                 if monitor.isMonitoring {
-                    NavigationLink(destination: StatusView()) {
+                    NavigationLink(value: SettingsPage.status) {
                         Label("Status", systemImage: "checkmark.circle")
                     }
                     
-                    NavigationLink(destination: NetworkHistoryView(deviceIndex: 1)) {
+                    NavigationLink(value: SettingsPage.device1History) {
                         Label("\(configuration.device1Label) History", systemImage: "chart.xyaxis.line")
                     }
                     
                     if configuration.device2Enabled {
-                        NavigationLink(destination: NetworkHistoryView(deviceIndex: 2)) {
+                        NavigationLink(value: SettingsPage.device2History) {
                             Label("\(configuration.device2Label) History", systemImage: "chart.xyaxis.line")
                         }
                     }
                     
                     if configuration.lanEnabled {
-                        NavigationLink(destination: NetworkHistoryView(deviceIndex: 3)) {
+                        NavigationLink(value: SettingsPage.lanHistory) {
                             Label("\(configuration.lanLabel) History", systemImage: "chart.xyaxis.line")
                         }
                     }
@@ -70,8 +92,20 @@ struct SettingsView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
             .listStyle(.sidebar)
         } detail: {
-            // Default detail view
-            DevicesSettingsView()
+            switch selectedPage {
+            case .devices, nil:
+                DevicesSettingsView()
+            case .monitoring:
+                MonitoringSettingsView()
+            case .status:
+                StatusView()
+            case .device1History:
+                NetworkHistoryView(deviceIndex: 1)
+            case .device2History:
+                NetworkHistoryView(deviceIndex: 2)
+            case .lanHistory:
+                NetworkHistoryView(deviceIndex: 3)
+            }
         }
         .navigationTitle("WAN Monitor Settings")
         .toolbar {
@@ -84,17 +118,68 @@ struct SettingsView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") {
                     configuration.saveConfiguration()
-                    // Restart monitoring with new settings
-                    Task {
-                        monitor.stopMonitoring()
-                        monitor.startMonitoring()
+                    
+                    // Only restart monitoring if settings changed that require it
+                    if needsRestartForChanges() {
+                        Task {
+                            monitor.stopMonitoring()
+                            // Small delay to ensure clean shutdown
+                            try? await Task.sleep(for: .milliseconds(500))
+                            monitor.startMonitoring()
+                        }
                     }
+                    
                     onClose()
                 }
                 .buttonStyle(.borderedProminent)
             }
         }
         .frame(minWidth: 800, minHeight: 600)
+        .onAppear {
+            DebugLogger.logConfig("📖 Settings window opened - suspending config observer")
+            monitor.suspendConfigurationObserver()
+            captureOriginalValues()
+        }
+        .onDisappear {
+            DebugLogger.logConfig("📕 Settings window closed - resuming config observer")
+            monitor.resumeConfigurationObserver()
+        }
+    }
+    
+    private func captureOriginalValues() {
+        originalDevice1Host = configuration.device1Host
+        originalDevice1Community = configuration.device1Community
+        originalDevice1Port = configuration.device1Port
+        originalDevice1InterfaceName = configuration.device1InterfaceName
+        originalDevice2Host = configuration.device2Host
+        originalDevice2Community = configuration.device2Community
+        originalDevice2Port = configuration.device2Port
+        originalDevice2InterfaceName = configuration.device2InterfaceName
+        originalDevice2Enabled = configuration.device2Enabled
+        originalLanInterfaceName = configuration.lanInterfaceName
+        originalLanEnabled = configuration.lanEnabled
+    }
+    
+    private func needsRestartForChanges() -> Bool {
+        // Only restart if monitoring is active and critical settings changed
+        guard monitor.isMonitoring else { return false }
+        
+        // Check if device connection settings changed
+        let device1Changed = originalDevice1Host != configuration.device1Host ||
+                            originalDevice1Community != configuration.device1Community ||
+                            originalDevice1Port != configuration.device1Port ||
+                            originalDevice1InterfaceName != configuration.device1InterfaceName
+        
+        let device2Changed = originalDevice2Host != configuration.device2Host ||
+                            originalDevice2Community != configuration.device2Community ||
+                            originalDevice2Port != configuration.device2Port ||
+                            originalDevice2InterfaceName != configuration.device2InterfaceName ||
+                            originalDevice2Enabled != configuration.device2Enabled
+        
+        let lanChanged = originalLanInterfaceName != configuration.lanInterfaceName ||
+                        originalLanEnabled != configuration.lanEnabled
+        
+        return device1Changed || device2Changed || lanChanged
     }
     
     // MARK: - Device Settings View
@@ -427,7 +512,10 @@ struct SettingsView: View {
                         interfaceCount: monitor.device1AvailableInterfaces.count,
                         uploadSpeed: monitor.device1FormattedUploadSpeed,
                         downloadSpeed: monitor.device1FormattedDownloadSpeed,
-                        latency: monitor.device1FormattedLatency
+                        latency: monitor.device1FormattedLatency,
+                        interfaceSpeed: monitor.device1FormattedInterfaceSpeed,
+                        uploadUtilization: monitor.device1UploadUtilization,
+                        downloadUtilization: monitor.device1DownloadUtilization
                     )
                     
                     if configuration.device2Enabled {
@@ -438,7 +526,10 @@ struct SettingsView: View {
                             interfaceCount: monitor.device2AvailableInterfaces.count,
                             uploadSpeed: monitor.device2FormattedUploadSpeed,
                             downloadSpeed: monitor.device2FormattedDownloadSpeed,
-                            latency: monitor.device2FormattedLatency
+                            latency: monitor.device2FormattedLatency,
+                            interfaceSpeed: monitor.device2FormattedInterfaceSpeed,
+                            uploadUtilization: monitor.device2UploadUtilization,
+                            downloadUtilization: monitor.device2DownloadUtilization
                         )
                     }
                     
@@ -652,6 +743,11 @@ struct DeviceStatusCard: View {
     let downloadSpeed: (value: String, unit: String)
     let latency: String
     
+    // New optional parameters for interface speed and utilization
+    var interfaceSpeed: String? = nil
+    var uploadUtilization: Double? = nil
+    var downloadUtilization: Double? = nil
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
@@ -687,20 +783,22 @@ struct DeviceStatusCard: View {
                     .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
             }
             
-            // Metrics
+            // Primary Metrics
             HStack(spacing: 20) {
                 MetricView(
                     title: "Upload",
                     value: uploadSpeed.value,
                     unit: uploadSpeed.unit,
-                    systemImage: "arrow.up"
+                    systemImage: "arrow.up",
+                    utilization: uploadUtilization
                 )
                 
                 MetricView(
                     title: "Download", 
                     value: downloadSpeed.value,
                     unit: downloadSpeed.unit,
-                    systemImage: "arrow.down"
+                    systemImage: "arrow.down",
+                    utilization: downloadUtilization
                 )
                 
                 MetricView(
@@ -722,6 +820,29 @@ struct DeviceStatusCard: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+            
+            // Additional Metrics (Interface Speed)
+            if let speed = interfaceSpeed {
+                Divider()
+                    .padding(.vertical, 4)
+                
+                HStack(spacing: 6) {
+                    Image(systemName: "speedometer")
+                        .foregroundStyle(.blue)
+                        .font(.caption)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Interface Speed")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(speed)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .monospacedDigit()
+                    }
+                    
+                    Spacer()
                 }
             }
         }
@@ -814,6 +935,7 @@ struct MetricView: View {
     let value: String
     let unit: String
     let systemImage: String
+    var utilization: Double? = nil // Optional utilization percentage
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -835,6 +957,29 @@ struct MetricView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            
+            // Show utilization if available
+            if let util = utilization {
+                HStack(spacing: 4) {
+                    Text(String(format: "%.1f%%", util))
+                        .font(.caption2)
+                        .foregroundStyle(utilizationColor(util))
+                        .monospacedDigit()
+                    Text("used")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    
+    private func utilizationColor(_ util: Double) -> Color {
+        if util < 50 {
+            return .green
+        } else if util < 80 {
+            return .orange
+        } else {
+            return .red
         }
     }
 }

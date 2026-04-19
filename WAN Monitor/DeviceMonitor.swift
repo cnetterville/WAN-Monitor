@@ -25,6 +25,12 @@ struct DeviceData: Sendable {
     var availableInterfaces: [NetworkInterface] = []
     var isDiscoveringInterfaces = false
     
+    // New fields for interface speed and utilization
+    var interfaceSpeed: UInt64? = nil // Interface speed in bps
+    var formattedInterfaceSpeed: String = "-"
+    var uploadUtilization: Double? = nil // Upload utilization percentage (0-100)
+    var downloadUtilization: Double? = nil // Download utilization percentage (0-100)
+    
     init(deviceIndex: Int, label: String) {
         self.deviceIndex = deviceIndex
         self.label = label
@@ -159,6 +165,23 @@ private actor DeviceMonitorState {
         smoothedDownloadSpeed = 0.0
     }
     
+    // Uptime tracking for reboot detection
+    var lastKnownUptime: UInt64?
+    var rebootDetectedAt: Date?
+    
+    /// Returns true if a reboot was detected (uptime decreased).
+    func checkAndUpdateUptime(_ centiseconds: UInt64) -> Bool {
+        let rebootDetected: Bool
+        if let last = lastKnownUptime, centiseconds < last {
+            rebootDetected = true
+            rebootDetectedAt = Date()
+        } else {
+            rebootDetected = false
+        }
+        lastKnownUptime = centiseconds
+        return rebootDetected
+    }
+    
     func resetAll() {
         interfaceIndex = nil
         lastInOctets = nil
@@ -169,6 +192,8 @@ private actor DeviceMonitorState {
         circuitBreaker = CircuitBreaker()
         lastInterfaceDiscovery = nil
         cachedInterfaces = []
+        lastKnownUptime = nil
+        rebootDetectedAt = nil
     }
     
     func getInterfaceIndex() -> Int? {
@@ -216,6 +241,13 @@ final class DeviceMonitor: Sendable {
     private let ifHCInOctetsOID = "1.3.6.1.2.1.31.1.1.1.6"   // 64-bit counter
     private let ifHCOutOctetsOID = "1.3.6.1.2.1.31.1.1.1.10" // 64-bit counter
     
+    // Interface speed and status OIDs
+    private let ifHighSpeedOID = "1.3.6.1.2.1.31.1.1.1.15"   // Interface speed in Mbps
+    private let ifSpeedOID = "1.3.6.1.2.1.2.2.1.5"           // Interface speed in bps (for slower interfaces)
+    
+    // System OIDs
+    private let sysUptimeOID = "1.3.6.1.2.1.1.3.0"           // sysUpTime in centiseconds (TimeTicks)
+    
     // Smoothing
     private let smoothingFactor: Double = 0.7  // Reduced from 0.9 for more responsive updates
     
@@ -247,20 +279,21 @@ final class DeviceMonitor: Sendable {
         }
         
         // Use concurrent SNMP walks for faster discovery
+        // Each task gets its own UUID so process tracking and cancellation work correctly
         let (ifNames, ifDescr, ifOperStatus) = try await withThrowingTaskGroup(of: (String, [Int: String]).self, returning: ([Int: String], [Int: String], [Int: String]).self) { group in
             
             group.addTask {
-                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.31.1.1.1.1", updateInterval: updateInterval, taskId: taskId)
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.31.1.1.1.1", updateInterval: updateInterval, taskId: UUID())
                 return ("names", result)
             }
             
             group.addTask {
-                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.2", updateInterval: updateInterval, taskId: taskId)
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.2", updateInterval: updateInterval, taskId: UUID())
                 return ("descr", result)
             }
             
             group.addTask {
-                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.8", updateInterval: updateInterval, taskId: taskId)
+                let result = try await snmpManager.performSnmpWalk(host: self.host, community: self.community, oid: "1.3.6.1.2.1.2.2.1.8", updateInterval: updateInterval, taskId: UUID())
                 return ("status", result)
             }
             
@@ -413,9 +446,10 @@ final class DeviceMonitor: Sendable {
         let outOid = "\(ifHCOutOctetsOID).\(interfaceIndex!)"
         
         do {
-            // Use centralized SNMP manager
-            let currentInOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: inOid, updateInterval: updateInterval, taskId: taskId)
-            let currentOutOctets = try await snmpManager.performSnmpGet(host: host, community: community, oid: outOid, updateInterval: updateInterval, taskId: taskId)
+            // Fetch in/out counters concurrently - each gets its own UUID for correct process tracking
+            async let inResult = snmpManager.performSnmpGet(host: host, community: community, oid: inOid, updateInterval: updateInterval, taskId: taskId)
+            async let outResult = snmpManager.performSnmpGet(host: host, community: community, oid: outOid, updateInterval: updateInterval, taskId: UUID())
+            let (currentInOctets, currentOutOctets) = try await (inResult, outResult)
             
             let now = Date()
             
@@ -433,7 +467,7 @@ final class DeviceMonitor: Sendable {
                 let speedDisplayUnit = await getSpeedDisplayUnit()
                 
                 // Minimum time difference to avoid division by very small numbers
-                guard timeDiff > 2.0 else {
+                guard timeDiff > 0.5 else {
                     DebugLogger.logSNMP("\(label) - Time difference too small (\(timeDiff)s), skipping calculation")
                     return (smoothedUp, smoothedDown, formatSpeed(smoothedUp, unit: speedDisplayUnit), formatSpeed(smoothedDown, unit: speedDisplayUnit))
                 }
@@ -514,11 +548,15 @@ final class DeviceMonitor: Sendable {
             }
             
         } catch {
-            // Record failure in circuit breaker
-            currentCircuitBreaker.recordFailure()
-            await state.updateCircuitBreaker(currentCircuitBreaker)
-            
-            DebugLogger.logError("\(label) - Traffic update error, circuit breaker failures: \(currentCircuitBreaker.failureCount)", error: error)
+            // Record failure in circuit breaker only if not a cancellation
+            if !(error is CancellationError) {
+                currentCircuitBreaker.recordFailure()
+                await state.updateCircuitBreaker(currentCircuitBreaker)
+                
+                DebugLogger.logError("\(label) - Traffic update error, circuit breaker failures: \(currentCircuitBreaker.failureCount)", error: error)
+            } else {
+                DebugLogger.logNetwork("\(label) - Traffic update cancelled")
+            }
             throw error
         }
     }
@@ -527,6 +565,85 @@ final class DeviceMonitor: Sendable {
     
     private func shouldRediscoverInterfaces(availableInterfaces: [NetworkInterface]) async -> Bool {
         return await state.shouldRediscoverInterfaces(availableInterfaces: availableInterfaces)
+    }
+    
+    // MARK: - System Uptime
+    
+    /// Fetches sysUpTime from the device. Returns formatted uptime string and whether a reboot was detected.
+    func fetchSysUptime(using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0) async -> (formatted: String, rebootDetected: Bool) {
+        do {
+            let raw = try await snmpManager.performSnmpGetString(host: host, community: community, oid: sysUptimeOID, updateInterval: updateInterval, taskId: UUID())
+            DebugLogger.logSNMP("\(label) - sysUpTime raw: '\(raw)'")
+            // Detect SNMP error responses (device doesn't support OID)
+            let lower = raw.lowercased()
+            guard !lower.contains("no such") && !lower.contains("error") && !lower.contains("unknown") else {
+                DebugLogger.logSNMP("\(label) - sysUpTime OID not supported by device: \(raw)")
+                return ("-", false)
+            }
+            let centiseconds = parseTimeTicks(raw)
+            guard centiseconds > 0 else {
+                DebugLogger.logSNMP("\(label) - sysUpTime parsed to 0, raw was: '\(raw)'")
+                return ("-", false)
+            }
+            let rebootDetected = await state.checkAndUpdateUptime(centiseconds)
+            DebugLogger.logSNMP("\(label) - sysUpTime: \(centiseconds)cs → \(formatUptime(centiseconds))")
+            return (formatUptime(centiseconds), rebootDetected)
+        } catch {
+            DebugLogger.logSNMP("\(label) - sysUpTime fetch failed: \(error)")
+            return ("-", false)
+        }
+    }
+    
+    /// Parses snmpget TimeTicks output into centiseconds.
+    /// Handles plain integers, "H:MM:SS.cc", "D day(s), H:MM:SS.cc",
+    /// and "Timeticks: (12345) H:MM:SS.cc" (when -Oqv flag is ignored by some agents).
+    private func parseTimeTicks(_ s: String) -> UInt64 {
+        var rest = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Strip "Timeticks: (NNN) " prefix if present
+        if rest.lowercased().hasPrefix("timeticks:") {
+            if let parenClose = rest.range(of: ") ") {
+                rest = String(rest[parenClose.upperBound...])
+            }
+        }
+        
+        // Plain integer (raw centiseconds) — returned by some net-snmp versions
+        if let raw = UInt64(rest) { return raw }
+        
+        // "D day(s), H:MM:SS.cc" format
+        var days: UInt64 = 0
+        if rest.contains(" day") {
+            if let dayRange = rest.range(of: " day"),
+               let commaRange = rest.range(of: ", ") {
+                days = UInt64(String(rest[rest.startIndex..<dayRange.lowerBound]).trimmingCharacters(in: .whitespaces)) ?? 0
+                rest = String(rest[commaRange.upperBound...])
+            }
+        }
+        
+        // "H:MM:SS.cc" format
+        let timeParts = rest.components(separatedBy: ":")
+        guard timeParts.count == 3 else { return days * 8_640_000 }
+        let h = UInt64(timeParts[0]) ?? 0
+        let m = UInt64(timeParts[1]) ?? 0
+        let secParts = timeParts[2].components(separatedBy: ".")
+        let sec = UInt64(secParts[0]) ?? 0
+        let cs  = secParts.count > 1 ? (UInt64(secParts[1]) ?? 0) : 0
+        
+        return days * 8_640_000 + h * 360_000 + m * 6_000 + sec * 100 + cs
+    }
+    
+    private func formatUptime(_ centiseconds: UInt64) -> String {
+        let totalSeconds = centiseconds / 100
+        let days = totalSeconds / 86400
+        let hours = (totalSeconds % 86400) / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        if days > 0 {
+            return "\(days)d \(hours)h"
+        } else if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
     }
     
     // MARK: - Latency and Packet Loss Update
@@ -539,13 +656,13 @@ final class DeviceMonitor: Sendable {
                 group.addTask {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-                    // Send 3 packets for better statistics
-                    process.arguments = ["-c", "3", "-t", "5", host]
+                    // 1 packet, 2s timeout — fast enough for 1s update interval
+                    process.arguments = ["-c", "1", "-t", "2", host]
                     let pipe = Pipe()
                     process.standardOutput = pipe
                     
                     let timeoutTask = Task {
-                        try await Task.sleep(nanoseconds: 8_000_000_000)
+                        try await Task.sleep(nanoseconds: 4_000_000_000)
                         process.terminate()
                     }
                     
@@ -630,6 +747,96 @@ final class DeviceMonitor: Sendable {
         }
     }
 
+    // MARK: - Interface Speed and Utilization
+    
+    func updateInterfaceSpeedAndUtilization(currentUploadSpeed: Double, currentDownloadSpeed: Double, using snmpManager: SNMPManager = SNMPManager.shared, updateInterval: TimeInterval = 2.0, taskId: UUID = UUID()) async throws -> (speed: UInt64, formattedSpeed: String, uploadUtil: Double, downloadUtil: Double) {
+        
+        // Get interface index - must have interfaces discovered first
+        guard let interfaceIndex = await state.getInterfaceIndex() else {
+            DebugLogger.logSNMP("\(label) - No interface index set, skipping speed/utilization update")
+            throw NetworkDiscoveryError.interfaceNotFound
+        }
+        
+        DebugLogger.logSNMP("\(label) - Querying interface speed for index \(interfaceIndex)")
+        
+        // Try to get high-speed interface speed first (for Gigabit+ interfaces)
+        let highSpeedOid = "\(ifHighSpeedOID).\(interfaceIndex)"
+        
+        do {
+            let speedMbps = try await snmpManager.performSnmpGet(host: host, community: community, oid: highSpeedOid, updateInterval: updateInterval, taskId: taskId)
+            
+            guard speedMbps > 0 else {
+                DebugLogger.logSNMP("\(label) - High-speed OID returned 0, trying regular speed OID")
+                // If high-speed is 0, try regular speed OID
+                return try await getRegularInterfaceSpeed(interfaceIndex: interfaceIndex, currentUploadSpeed: currentUploadSpeed, currentDownloadSpeed: currentDownloadSpeed, using: snmpManager, updateInterval: updateInterval, taskId: taskId)
+            }
+            
+            let speedBps = speedMbps * 1_000_000 // Convert Mbps to bps
+            let formattedSpeed = formatInterfaceSpeed(speedBps)
+            
+            // Calculate utilization percentages
+            let uploadUtil = calculateUtilization(currentSpeed: currentUploadSpeed, maxSpeed: Double(speedBps))
+            let downloadUtil = calculateUtilization(currentSpeed: currentDownloadSpeed, maxSpeed: Double(speedBps))
+            
+            DebugLogger.logSNMP("\(label) - Interface speed: \(formattedSpeed), Upload util: \(String(format: "%.1f%%", uploadUtil)), Download util: \(String(format: "%.1f%%", downloadUtil))")
+            
+            return (speedBps, formattedSpeed, uploadUtil, downloadUtil)
+            
+        } catch {
+            DebugLogger.logSNMP("\(label) - High-speed OID failed, trying regular speed OID")
+            // Fall back to regular speed OID
+            return try await getRegularInterfaceSpeed(interfaceIndex: interfaceIndex, currentUploadSpeed: currentUploadSpeed, currentDownloadSpeed: currentDownloadSpeed, using: snmpManager, updateInterval: updateInterval, taskId: taskId)
+        }
+    }
+    
+    private func getRegularInterfaceSpeed(interfaceIndex: Int, currentUploadSpeed: Double, currentDownloadSpeed: Double, using snmpManager: SNMPManager, updateInterval: TimeInterval, taskId: UUID) async throws -> (speed: UInt64, formattedSpeed: String, uploadUtil: Double, downloadUtil: Double) {
+        let speedOid = "\(ifSpeedOID).\(interfaceIndex)"
+        
+        let speedBps = try await snmpManager.performSnmpGet(host: host, community: community, oid: speedOid, updateInterval: updateInterval, taskId: taskId)
+        
+        guard speedBps > 0 else {
+            throw NetworkDiscoveryError.invalidResponse
+        }
+        
+        let formattedSpeed = formatInterfaceSpeed(speedBps)
+        
+        // Calculate utilization percentages
+        let uploadUtil = calculateUtilization(currentSpeed: currentUploadSpeed, maxSpeed: Double(speedBps))
+        let downloadUtil = calculateUtilization(currentSpeed: currentDownloadSpeed, maxSpeed: Double(speedBps))
+        
+        DebugLogger.logSNMP("\(label) - Interface speed: \(formattedSpeed), Upload util: \(String(format: "%.1f%%", uploadUtil)), Download util: \(String(format: "%.1f%%", downloadUtil))")
+        
+        return (speedBps, formattedSpeed, uploadUtil, downloadUtil)
+    }
+    
+    private func calculateUtilization(currentSpeed: Double, maxSpeed: Double) -> Double {
+        guard maxSpeed > 0 else { return 0.0 }
+        
+        // Current speed is in bytes per second, convert to bits per second
+        let currentBps = currentSpeed * 8
+        
+        // Calculate percentage
+        let utilization = (currentBps / maxSpeed) * 100.0
+        
+        // Clamp to 0-100
+        return min(max(utilization, 0.0), 100.0)
+    }
+    
+    private func formatInterfaceSpeed(_ speedBps: UInt64) -> String {
+        let bps = Double(speedBps)
+        
+        if bps >= 1_000_000_000 {
+            return String(format: "%.1f Gbps", bps / 1_000_000_000)
+        } else if bps >= 1_000_000 {
+            return String(format: "%.0f Mbps", bps / 1_000_000)
+        } else if bps >= 1_000 {
+            return String(format: "%.0f Kbps", bps / 1_000)
+        } else {
+            return "\(speedBps) bps"
+        }
+    }
+    
+    
     func resetState() {
         Task {
             await state.resetAll()

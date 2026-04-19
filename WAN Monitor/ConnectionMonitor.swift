@@ -28,6 +28,16 @@ class ConnectionMonitor: ObservableObject {
     @Published private var _device1AvailableInterfaces: [NetworkInterface] = []
     @Published var device1IsDiscoveringInterfaces = false
     
+    // New properties for interface speed and utilization
+    @Published var device1InterfaceSpeed: UInt64? = nil
+    @Published var device1FormattedInterfaceSpeed: String = "-"
+    @Published var device1UploadUtilization: Double? = nil
+    @Published var device1DownloadUtilization: Double? = nil
+    
+    // Device uptime and reboot detection
+    @Published var device1DeviceUptime: String = "-"
+    @Published var device1RebootDetected: Bool = false
+    
     // Computed property to prevent accidental clearing of interfaces
     var device1AvailableInterfaces: [NetworkInterface] {
         get { _device1AvailableInterfaces }
@@ -54,6 +64,16 @@ class ConnectionMonitor: ObservableObject {
     @Published var device2ErrorMessage: String?
     @Published private var _device2AvailableInterfaces: [NetworkInterface] = []
     @Published var device2IsDiscoveringInterfaces = false
+    
+    // New properties for interface speed and utilization
+    @Published var device2InterfaceSpeed: UInt64? = nil
+    @Published var device2FormattedInterfaceSpeed: String = "-"
+    @Published var device2UploadUtilization: Double? = nil
+    @Published var device2DownloadUtilization: Double? = nil
+    
+    // Device uptime and reboot detection
+    @Published var device2DeviceUptime: String = "-"
+    @Published var device2RebootDetected: Bool = false
     
     // Computed property to prevent accidental clearing of interfaces
     var device2AvailableInterfaces: [NetworkInterface] {
@@ -184,13 +204,44 @@ class ConnectionMonitor: ObservableObject {
 
     // MARK: - Configuration Observer
     
+    private var isProcessingConfigChange = false
+    private var configObserverCancellable: AnyCancellable?
+    
     private func setupConfigurationObserver() {
-        configuration.objectWillChange
+        configObserverCancellable = configuration.objectWillChange
             .receive(on: DispatchQueue.main)
+            .debounce(for: .seconds(1.0), scheduler: DispatchQueue.main) // Debounce to avoid spurious updates
             .sink { [weak self] _ in
-                self?.updateDeviceMonitors()
+                guard let self = self else { return }
+                
+                // Prevent re-entrant calls
+                guard !self.isProcessingConfigChange else {
+                    DebugLogger.logConfig("Configuration change already being processed, skipping")
+                    return
+                }
+                
+                self.isProcessingConfigChange = true
+                defer { self.isProcessingConfigChange = false }
+                
+                DebugLogger.logConfig("Configuration observer triggered, checking if update needed")
+                self.updateDeviceMonitors()
             }
-            .store(in: &cancellables)
+        
+        if let cancellable = configObserverCancellable {
+            cancellables.insert(cancellable)
+        }
+    }
+    
+    // Public method to temporarily disable config observer (used by Settings window)
+    func suspendConfigurationObserver() {
+        DebugLogger.logConfig("🔒 Configuration observer SUSPENDED")
+        configObserverCancellable?.cancel()
+    }
+    
+    // Public method to re-enable config observer
+    func resumeConfigurationObserver() {
+        DebugLogger.logConfig("🔓 Configuration observer RESUMED")
+        setupConfigurationObserver()
     }
     
     // MARK: - Network Path Monitoring
@@ -250,7 +301,10 @@ class ConnectionMonitor: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     private func updateDeviceMonitors() {
+        DebugLogger.logConfig("=== updateDeviceMonitors() called ===")
+        
         let wasMonitoring = isMonitoring
+        DebugLogger.logConfig("Was monitoring: \(wasMonitoring)")
         
         // Check if monitors actually need to be recreated
         let needsDevice1Update = device1Monitor.host != configuration.device1Host ||
@@ -270,11 +324,17 @@ class ConnectionMonitor: ObservableObject {
                             (lanMonitor?.interfaceName != configuration.lanInterfaceName) ||
                             (lanMonitor?.label != configuration.lanLabel)
         
+        DebugLogger.logConfig("Device 1 needs update: \(needsDevice1Update)")
+        DebugLogger.logConfig("Device 2 needs update: \(needsDevice2Update)")
+        DebugLogger.logConfig("LAN needs update: \(needsLANUpdate)")
+        
         // Only update if something actually changed
         guard needsDevice1Update || needsDevice2Update || needsLANUpdate else {
-            DebugLogger.logConfig("Configuration changed but monitors don't need recreation")
+            DebugLogger.logConfig("Configuration changed but monitors don't need recreation - SKIPPING")
             return
         }
+        
+        DebugLogger.logConfig("⚠️ STOPPING AND RESTARTING MONITORING DUE TO CONFIG CHANGES")
         
         // Stop monitoring if active
         if wasMonitoring {
@@ -535,6 +595,12 @@ class ConnectionMonitor: ObservableObject {
         device1PacketLoss = 0.0
         device1FormattedPacketLoss = "-"
         device1ErrorMessage = nil
+        device1InterfaceSpeed = nil
+        device1FormattedInterfaceSpeed = "-"
+        device1UploadUtilization = nil
+        device1DownloadUtilization = nil
+        device1DeviceUptime = "-"
+        device1RebootDetected = false
         
         device2UploadSpeed = 0.0
         device2DownloadSpeed = 0.0
@@ -547,6 +613,12 @@ class ConnectionMonitor: ObservableObject {
         device2PacketLoss = 0.0
         device2FormattedPacketLoss = "-"
         device2ErrorMessage = nil
+        device2InterfaceSpeed = nil
+        device2FormattedInterfaceSpeed = "-"
+        device2UploadUtilization = nil
+        device2DownloadUtilization = nil
+        device2DeviceUptime = "-"
+        device2RebootDetected = false
         
         lanUploadSpeed = 0.0
         lanDownloadSpeed = 0.0
@@ -600,6 +672,12 @@ class ConnectionMonitor: ObservableObject {
         // Update latency based on user-configured ping interval
         if monitoringCycle % latencyUpdateCycles == 0 {
             await updateAllLatencyWithRetry()
+        }
+        
+        // Update interface speed, utilization, and system uptime less frequently (every 10 cycles)
+        // AND wait until at least cycle 5 to ensure interfaces are discovered
+        if monitoringCycle >= 5 && monitoringCycle % 10 == 0 {
+            await updateAllInterfaceMetrics()
         }
         
         // Periodic interface rediscovery for failed devices
@@ -666,6 +744,12 @@ class ConnectionMonitor: ObservableObject {
     }
     
     private func updateTrafficDataWithRetry(for deviceIndex: Int, taskId: UUID) async {
+        // Check if monitoring is still active before starting
+        guard isMonitoring else {
+            DebugLogger.logNetwork("Device \(deviceIndex) - Monitoring stopped, skipping traffic update")
+            return
+        }
+        
         let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
         let availableInterfaces = deviceIndex == 1 ? device1AvailableInterfaces : device2AvailableInterfaces
         
@@ -714,6 +798,10 @@ class ConnectionMonitor: ObservableObject {
                     )
                 }
             }
+            
+        } catch is CancellationError {
+            // Task was cancelled - this is normal when stopping monitoring
+            DebugLogger.logNetwork("Device \(deviceIndex) - Traffic update cancelled")
             
         } catch NetworkDiscoveryError.interfaceNotFound {
             // Interface rediscovery needed
@@ -878,6 +966,91 @@ class ConnectionMonitor: ObservableObject {
             if let index = activeMonitoringTasks.firstIndex(of: taskId) {
                 activeMonitoringTasks.remove(at: index)
             }
+        }
+    }
+    
+    // MARK: - Interface Metrics Update
+    
+    private func updateAllInterfaceMetrics() async {
+        // Update interface speed, utilization, and sysUptime for all enabled devices
+        if configuration.device2Enabled {
+            async let metrics1: Void = updateInterfaceMetrics(for: 1)
+            async let metrics2: Void = updateInterfaceMetrics(for: 2)
+            async let uptime1: Void = updateSysUptime(for: 1)
+            async let uptime2: Void = updateSysUptime(for: 2)
+            _ = await (metrics1, metrics2, uptime1, uptime2)
+        } else {
+            async let metrics1: Void = updateInterfaceMetrics(for: 1)
+            async let uptime1: Void = updateSysUptime(for: 1)
+            _ = await (metrics1, uptime1)
+        }
+    }
+    
+    private func updateSysUptime(for deviceIndex: Int) async {
+        guard isMonitoring else { return }
+        let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
+        let (formatted, rebootDetected) = await monitor.fetchSysUptime(using: SNMPManager.shared, updateInterval: configuration.updateInterval)
+        if deviceIndex == 1 {
+            self.device1DeviceUptime = formatted
+            if rebootDetected { self.device1RebootDetected = true }
+        } else {
+            self.device2DeviceUptime = formatted
+            if rebootDetected { self.device2RebootDetected = true }
+        }
+    }
+    
+    private func updateInterfaceMetrics(for deviceIndex: Int) async {
+        // Check if monitoring is still active
+        guard isMonitoring else {
+            DebugLogger.logSNMP("Device \(deviceIndex) - Monitoring stopped, skipping interface metrics")
+            return
+        }
+        
+        let taskId = UUID()
+        addActiveMonitoringTask(taskId)
+        defer { cleanupTasks([taskId]) }
+        
+        let monitor = deviceIndex == 1 ? device1Monitor : device2Monitor
+        let currentUploadSpeed = deviceIndex == 1 ? device1UploadSpeed : device2UploadSpeed
+        let currentDownloadSpeed = deviceIndex == 1 ? device1DownloadSpeed : device2DownloadSpeed
+        
+        // Only try to get metrics if we have valid traffic data
+        guard currentUploadSpeed > 0 || currentDownloadSpeed > 0 else {
+            DebugLogger.logSNMP("Device \(deviceIndex) - Skipping interface metrics (no traffic data yet)")
+            return
+        }
+        
+        do {
+            let (speed, formattedSpeed, uploadUtil, downloadUtil) = try await monitor.updateInterfaceSpeedAndUtilization(
+                currentUploadSpeed: currentUploadSpeed,
+                currentDownloadSpeed: currentDownloadSpeed,
+                using: SNMPManager.shared,
+                updateInterval: configuration.updateInterval,
+                taskId: taskId
+            )
+            
+            // Update UI on main actor
+            if deviceIndex == 1 {
+                self.device1InterfaceSpeed = speed
+                self.device1FormattedInterfaceSpeed = formattedSpeed
+                self.device1UploadUtilization = uploadUtil
+                self.device1DownloadUtilization = downloadUtil
+            } else {
+                self.device2InterfaceSpeed = speed
+                self.device2FormattedInterfaceSpeed = formattedSpeed
+                self.device2UploadUtilization = uploadUtil
+                self.device2DownloadUtilization = downloadUtil
+            }
+            
+        } catch is CancellationError {
+            // Task was cancelled - monitoring likely stopped
+            DebugLogger.logSNMP("Device \(deviceIndex) - Interface metrics cancelled")
+        } catch NetworkDiscoveryError.interfaceNotFound {
+            // Expected when interfaces haven't been discovered yet
+            DebugLogger.logSNMP("Device \(deviceIndex) - Interface not found, will retry after discovery")
+        } catch {
+            // Log but don't show error to user - this is a non-critical metric
+            DebugLogger.logSNMP("Device \(deviceIndex) interface metrics update failed: \(error.localizedDescription)")
         }
     }
 }

@@ -83,6 +83,9 @@ class NetworkConfiguration: ObservableObject {
     @Published var historyLoadOnStartup: Bool = true // Whether to load history on startup
     @Published var historyRetentionHoursOnStartup: Int = 24 // How many hours of old history to keep when loading
     
+    // Display settings
+    @Published var compactMode: Bool = false // Compact menubar display
+    
     private init() {
         // Load configuration synchronously to avoid race conditions
         loadConfiguration()
@@ -145,6 +148,9 @@ class NetworkConfiguration: ObservableObject {
         defaults.set(historySaveOnQuit, forKey: "historySaveOnQuit")
         defaults.set(historyLoadOnStartup, forKey: "historyLoadOnStartup")
         defaults.set(historyRetentionHoursOnStartup, forKey: "historyRetentionHoursOnStartup")
+        
+        // Display settings
+        defaults.set(compactMode, forKey: "compactMode")
     }
     
     private func loadConfiguration() {
@@ -292,6 +298,11 @@ class NetworkConfiguration: ObservableObject {
         }
         if defaults.object(forKey: "historyRetentionHoursOnStartup") != nil {
             historyRetentionHoursOnStartup = defaults.integer(forKey: "historyRetentionHoursOnStartup")
+        }
+        
+        // Display settings
+        if defaults.object(forKey: "compactMode") != nil {
+            compactMode = defaults.bool(forKey: "compactMode")
         }
         
         // Sync with actual login item status on startup

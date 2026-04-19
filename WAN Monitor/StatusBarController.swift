@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
 
-class StatusBarController: NSObject, NSWindowDelegate {
+class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var monitor: ConnectionMonitor
     private var cancellables = Set<AnyCancellable>()
@@ -12,9 +13,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
     private var lanHistoryWindow: NSWindow?
     
     // MARK: - Hosted SwiftUI View
-    private var hostingView: NSHostingView<StatusBarView>?
+    private var hostingView: NSHostingView<AnyView>?
     private var lastUpdateTime = Date.distantPast
     private let minUpdateInterval: TimeInterval = 0.1
+    
+    // Track last data update time for display
+    private var lastDataUpdateTime: Date = Date()
 
     override init() {
         self.monitor = ConnectionMonitor()
@@ -60,6 +64,12 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         let config = NetworkConfiguration.shared
         
+        // Check if compact mode is enabled
+        if config.compactMode {
+            setupCompactView()
+            return
+        }
+        
         // Calculate width based on enabled devices - reduced for tighter layout
         var width: CGFloat = 130 // Base width for device 1 (reduced from 150)
         if config.device2Enabled {
@@ -99,7 +109,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
         
         // Create hosting view if needed
         if hostingView == nil {
-            hostingView = NSHostingView(rootView: statusBarView)
+            hostingView = NSHostingView(rootView: AnyView(statusBarView))
             hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
             button.addSubview(hostingView!)
             
@@ -108,7 +118,7 @@ class StatusBarController: NSObject, NSWindowDelegate {
             button.title = ""
         } else {
             // Just update the root view - SwiftUI will handle efficient diffing
-            hostingView?.rootView = statusBarView
+            hostingView?.rootView = AnyView(statusBarView)
             hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         }
         
@@ -134,6 +144,9 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
 
     private func updateDisplay() {
+        // Update last data update time
+        lastDataUpdateTime = Date()
+        
         // Remove throttling - update immediately when data changes
         // Just update the hosted view - no image conversion needed!
         setupHostedView()
@@ -145,29 +158,140 @@ class StatusBarController: NSObject, NSWindowDelegate {
                        (config.lanEnabled && monitor.lanErrorMessage != nil)
         statusItem?.button?.appearsDisabled = hasErrors
     }
+    
+    private func setupCompactView() {
+        guard let button = statusItem?.button else { return }
+        
+        let config = NetworkConfiguration.shared
+        
+        // Compact view: show only speeds, no latency
+        // Width calculation: labelWidth (10) + spacing (2) + valueWidth (42) + arrow (~10) = ~64 per device
+        var width: CGFloat = 70 // Increased compact width for device 1 to prevent wrapping
+        if config.device2Enabled {
+            width += 4  // Spacing between devices
+            width += 70
+        }
+        if config.lanEnabled {
+            width += 4  // Spacing between devices
+            width += 70
+        }
+        
+        let compactView = CompactStatusBarView(
+            device1Label: config.device1Label,
+            device1UpFormatted: monitor.device1FormattedUploadSpeed,
+            device1DownFormatted: monitor.device1FormattedDownloadSpeed,
+            device2Label: config.device2Label,
+            device2UpFormatted: monitor.device2FormattedUploadSpeed,
+            device2DownFormatted: monitor.device2FormattedDownloadSpeed,
+            device2Enabled: config.device2Enabled,
+            lanLabel: config.lanLabel,
+            lanUpFormatted: monitor.lanFormattedUploadSpeed,
+            lanDownFormatted: monitor.lanFormattedDownloadSpeed,
+            lanEnabled: config.lanEnabled
+        )
+        
+        if hostingView == nil {
+            hostingView = NSHostingView(rootView: AnyView(compactView))
+            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
+            button.addSubview(hostingView!)
+            button.image = nil
+            button.title = ""
+        } else {
+            hostingView?.rootView = AnyView(compactView)
+            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
+        }
+        
+        statusItem?.length = width
+    }
 
     @objc private func statusItemClicked() {
         guard let statusItem = statusItem else { return }
         
         let config = NetworkConfiguration.shared
         let menu = NSMenu()
+        menu.delegate = self
         
-        // Show real data in menu for enabled devices
+        // IMPROVED: Add current status summary at top of menu
         if monitor.isMonitoring {
-            // Add history menu items
+            let statusItem = NSMenuItem(title: "Network Status", action: nil, keyEquivalent: "")
+            statusItem.attributedTitle = NSAttributedString(
+                string: "Network Status",
+                attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
+            )
+            menu.addItem(statusItem)
+            
+            // Add last update time
+            let timeAgo = formatTimeAgo(lastDataUpdateTime)
+            let lastUpdateItem = NSMenuItem(title: "    Last updated: \(timeAgo)", action: nil, keyEquivalent: "")
+            lastUpdateItem.isEnabled = false
+            menu.addItem(lastUpdateItem)
+            
+            menu.addItem(NSMenuItem.separator())
+            
+            // Add detailed status for each device
+            addDeviceStatusMenuItem(to: menu, label: config.device1Label, 
+                                   upload: monitor.device1FormattedUploadSpeed,
+                                   download: monitor.device1FormattedDownloadSpeed,
+                                   latency: monitor.device1FormattedLatency,
+                                   packetLoss: monitor.device1FormattedPacketLoss,
+                                   uptime: monitor.device1DeviceUptime,
+                                   rebootDetected: monitor.device1RebootDetected,
+                                   error: monitor.device1ErrorMessage)
+            
+            if config.device2Enabled {
+                addDeviceStatusMenuItem(to: menu, label: config.device2Label,
+                                       upload: monitor.device2FormattedUploadSpeed,
+                                       download: monitor.device2FormattedDownloadSpeed,
+                                       latency: monitor.device2FormattedLatency,
+                                       packetLoss: monitor.device2FormattedPacketLoss,
+                                       uptime: monitor.device2DeviceUptime,
+                                       rebootDetected: monitor.device2RebootDetected,
+                                       error: monitor.device2ErrorMessage)
+            }
+            
+            if config.lanEnabled {
+                addLANStatusMenuItem(to: menu, label: config.lanLabel,
+                                    upload: monitor.lanFormattedUploadSpeed,
+                                    download: monitor.lanFormattedDownloadSpeed,
+                                    error: monitor.lanErrorMessage)
+            }
+            
+            menu.addItem(NSMenuItem.separator())
+            
+            // IMPROVED: Quick Actions submenu
+            let quickActionsItem = NSMenuItem(title: "Quick Actions", action: nil, keyEquivalent: "")
+            let quickActionsMenu = NSMenu()
+            
+            let copyStatsItem = NSMenuItem(title: "Copy Current Stats", action: #selector(copyCurrentStats), keyEquivalent: "c")
+            copyStatsItem.target = self
+            quickActionsMenu.addItem(copyStatsItem)
+            
+            let exportHistoryItem = NSMenuItem(title: "Export History...", action: #selector(exportHistory), keyEquivalent: "e")
+            exportHistoryItem.target = self
+            quickActionsMenu.addItem(exportHistoryItem)
+            
+            quickActionsItem.submenu = quickActionsMenu
+            menu.addItem(quickActionsItem)
+            
+            menu.addItem(NSMenuItem.separator())
+            
+            // History menu items with icons
             let device1HistoryItem = NSMenuItem(title: "View \(config.device1Label) History...", action: #selector(showDevice1History), keyEquivalent: "1")
             device1HistoryItem.target = self
+            device1HistoryItem.image = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil)
             menu.addItem(device1HistoryItem)
             
             if config.device2Enabled {
                 let device2HistoryItem = NSMenuItem(title: "View \(config.device2Label) History...", action: #selector(showDevice2History), keyEquivalent: "2")
                 device2HistoryItem.target = self
+                device2HistoryItem.image = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil)
                 menu.addItem(device2HistoryItem)
             }
             
             if config.lanEnabled {
                 let lanHistoryItem = NSMenuItem(title: "View \(config.lanLabel) History...", action: #selector(showLANHistory), keyEquivalent: "3")
                 lanHistoryItem.target = self
+                lanHistoryItem.image = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis", accessibilityDescription: nil)
                 menu.addItem(lanHistoryItem)
             }
             
@@ -176,11 +300,14 @@ class StatusBarController: NSObject, NSWindowDelegate {
                 menu.addItem(NSMenuItem.separator())
                 let troubleshootItem = NSMenuItem(title: "Troubleshoot Connection Issues...", action: #selector(showTroubleshooting), keyEquivalent: "")
                 troubleshootItem.target = self
+                troubleshootItem.image = NSImage(systemSymbolName: "wrench.and.screwdriver", accessibilityDescription: nil)
                 menu.addItem(troubleshootItem)
             }
             
         } else {
-            menu.addItem(NSMenuItem(title: "Not monitoring", action: nil, keyEquivalent: ""))
+            let notMonitoringItem = NSMenuItem(title: "Not monitoring", action: nil, keyEquivalent: "")
+            notMonitoringItem.isEnabled = false
+            menu.addItem(notMonitoringItem)
         }
         
         menu.addItem(NSMenuItem.separator())
@@ -189,23 +316,44 @@ class StatusBarController: NSObject, NSWindowDelegate {
         let startStopTitle = monitor.isMonitoring ? "Stop Monitoring" : "Start Monitoring"
         let startStopItem = NSMenuItem(title: startStopTitle, action: #selector(toggleMonitoring), keyEquivalent: "")
         startStopItem.target = self
+        startStopItem.image = NSImage(systemSymbolName: monitor.isMonitoring ? "stop.circle" : "play.circle", accessibilityDescription: nil)
         menu.addItem(startStopItem)
         
         // Add refresh interfaces option
         if monitor.isMonitoring {
             let refreshItem = NSMenuItem(title: "Refresh Interfaces", action: #selector(refreshInterfaces), keyEquivalent: "r")
             refreshItem.target = self
+            refreshItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
             menu.addItem(refreshItem)
         }
         
         menu.addItem(NSMenuItem.separator())
         
+        // IMPROVED: Display preferences submenu
+        let displayPrefsItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
+        let displayMenu = NSMenu()
+        
+        let compactModeItem = NSMenuItem(title: "Compact Mode", action: #selector(toggleCompactMode), keyEquivalent: "")
+        compactModeItem.target = self
+        compactModeItem.state = config.compactMode ? .on : .off
+        displayMenu.addItem(compactModeItem)
+        
+        displayPrefsItem.submenu = displayMenu
+        menu.addItem(displayPrefsItem)
+        
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
+        settingsItem.image = NSImage(systemSymbolName: "gear", accessibilityDescription: nil)
         menu.addItem(settingsItem)
+        
         menu.addItem(NSMenuItem.separator())
         
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
+        // IMPROVED: About item
+        let aboutItem = NSMenuItem(title: "About WAN Monitor", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+        
+        let quitItem = NSMenuItem(title: "Quit WAN Monitor", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         
@@ -217,6 +365,209 @@ class StatusBarController: NSObject, NSWindowDelegate {
         DispatchQueue.main.async {
             statusItem.menu = nil
         }
+    }
+    
+    // MARK: - Helper Methods for Menu
+    
+    private func formatTimeAgo(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        
+        if seconds < 5 {
+            return "just now"
+        } else if seconds < 60 {
+            return "\(seconds) seconds ago"
+        } else if seconds < 3600 {
+            let minutes = seconds / 60
+            return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
+        } else {
+            let hours = seconds / 3600
+            return "\(hours) hour\(hours == 1 ? "" : "s") ago"
+        }
+    }
+    
+    private func addDeviceStatusMenuItem(to menu: NSMenu, label: String, 
+                                        upload: (value: String, unit: String),
+                                        download: (value: String, unit: String),
+                                        latency: String,
+                                        packetLoss: String,
+                                        uptime: String,
+                                        rebootDetected: Bool,
+                                        error: String?) {
+        let indent = "    "
+        if let error = error {
+            let item = NSMenuItem(title: "\(indent)\(label): \(error)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            let uptimeSuffix = uptime == "-" ? "" : " | Up: \(uptime)\(rebootDetected ? " ⚠" : "")"
+            let statusText = String(format: "%@%@: ↓%@ %@ ↑%@ %@ | %@ ms | Loss: %@%@",
+                                   indent, label,
+                                   download.value, download.unit,
+                                   upload.value, upload.unit,
+                                   latency, packetLoss,
+                                   uptimeSuffix)
+            let item = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+    }
+    
+    private func addLANStatusMenuItem(to menu: NSMenu, label: String,
+                                     upload: (value: String, unit: String),
+                                     download: (value: String, unit: String),
+                                     error: String?) {
+        let indent = "    "
+        if let error = error {
+            let item = NSMenuItem(title: "\(indent)\(label): \(error)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            let statusText = String(format: "%@%@: ↓%@ %@ ↑%@ %@",
+                                   indent, label,
+                                   download.value, download.unit,
+                                   upload.value, upload.unit)
+            let item = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+    }
+    
+    // MARK: - New Action Methods
+    
+    @objc private func copyCurrentStats() {
+        let config = NetworkConfiguration.shared
+        var statsText = "WAN Monitor - Current Statistics\n"
+        statsText += "Generated: \(Date())\n\n"
+        
+        statsText += "\(config.device1Label):\n"
+        statsText += "  Upload: \(monitor.device1FormattedUploadSpeed.value) \(monitor.device1FormattedUploadSpeed.unit)\n"
+        statsText += "  Download: \(monitor.device1FormattedDownloadSpeed.value) \(monitor.device1FormattedDownloadSpeed.unit)\n"
+        statsText += "  Latency: \(monitor.device1FormattedLatency) ms\n"
+        statsText += "  Packet Loss: \(monitor.device1FormattedPacketLoss)\n\n"
+        
+        if config.device2Enabled {
+            statsText += "\(config.device2Label):\n"
+            statsText += "  Upload: \(monitor.device2FormattedUploadSpeed.value) \(monitor.device2FormattedUploadSpeed.unit)\n"
+            statsText += "  Download: \(monitor.device2FormattedDownloadSpeed.value) \(monitor.device2FormattedDownloadSpeed.unit)\n"
+            statsText += "  Latency: \(monitor.device2FormattedLatency) ms\n"
+            statsText += "  Packet Loss: \(monitor.device2FormattedPacketLoss)\n\n"
+        }
+        
+        if config.lanEnabled {
+            statsText += "\(config.lanLabel):\n"
+            statsText += "  Upload: \(monitor.lanFormattedUploadSpeed.value) \(monitor.lanFormattedUploadSpeed.unit)\n"
+            statsText += "  Download: \(monitor.lanFormattedDownloadSpeed.value) \(monitor.lanFormattedDownloadSpeed.unit)\n"
+        }
+        
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(statsText, forType: .string)
+        
+        // Show notification
+        NotificationManager.shared.showNotification(
+            title: "Stats Copied",
+            message: "Current network statistics copied to clipboard"
+        )
+    }
+    
+    @objc private func exportHistory() {
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.commaSeparatedText]
+        savePanel.nameFieldStringValue = "wan-monitor-history-\(Date().formatted(date: .numeric, time: .omitted)).csv"
+        savePanel.title = "Export Network History"
+        savePanel.message = "Choose a location to save the network history data"
+        
+        savePanel.begin { response in
+            guard response == .OK, let url = savePanel.url else { return }
+            
+            Task {
+                await self.performHistoryExport(to: url)
+            }
+        }
+    }
+    
+    private func performHistoryExport(to url: URL) async {
+        let historyManager = HistoryManager.shared
+        let config = NetworkConfiguration.shared
+        
+        var csvContent = "Timestamp,Device,Upload (Mbps),Download (Mbps),Latency (ms),Packet Loss (%)\n"
+        
+        // Export Device 1
+        for point in historyManager.device1History {
+            let upload = point.uploadSpeed * 8 / 1_000_000
+            let download = point.downloadSpeed * 8 / 1_000_000
+            let latency = point.latency ?? 0
+            let packetLoss = point.packetLoss ?? 0
+            
+            csvContent += "\(point.timestamp),\(config.device1Label),\(upload),\(download),\(latency),\(packetLoss)\n"
+        }
+        
+        // Export Device 2 if enabled
+        if config.device2Enabled {
+            for point in historyManager.device2History {
+                let upload = point.uploadSpeed * 8 / 1_000_000
+                let download = point.downloadSpeed * 8 / 1_000_000
+                let latency = point.latency ?? 0
+                let packetLoss = point.packetLoss ?? 0
+                
+                csvContent += "\(point.timestamp),\(config.device2Label),\(upload),\(download),\(latency),\(packetLoss)\n"
+            }
+        }
+        
+        // Export LAN if enabled
+        if config.lanEnabled {
+            for point in historyManager.lanHistory {
+                let upload = point.uploadSpeed * 8 / 1_000_000
+                let download = point.downloadSpeed * 8 / 1_000_000
+                
+                csvContent += "\(point.timestamp),\(config.lanLabel),\(upload),\(download),N/A,N/A\n"
+            }
+        }
+        
+        do {
+            try csvContent.write(to: url, atomically: true, encoding: .utf8)
+            await MainActor.run {
+                NotificationManager.shared.showNotification(
+                    title: "Export Complete",
+                    message: "Network history exported successfully"
+                )
+            }
+        } catch {
+            await MainActor.run {
+                let alert = NSAlert()
+                alert.messageText = "Export Failed"
+                alert.informativeText = "Could not export history: \(error.localizedDescription)"
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
+    
+    @objc private func toggleCompactMode() {
+        let config = NetworkConfiguration.shared
+        config.compactMode.toggle()
+        config.saveConfiguration()
+        updateDisplay()
+    }
+    
+    @objc private func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "WAN Monitor"
+        alert.informativeText = """
+        Version 1.0
+        
+        A network monitoring utility for macOS that tracks bandwidth usage and connection quality via SNMP.
+        
+        Features:
+        • Real-time bandwidth monitoring
+        • Latency and packet loss tracking
+        • Historical data visualization
+        • Multi-device support
+        
+        © 2025 Curtis Netterville
+        """
+        alert.icon = NSImage(systemSymbolName: "network", accessibilityDescription: nil)
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
     
     private func getDeviceStatusText(
@@ -306,7 +657,14 @@ class StatusBarController: NSObject, NSWindowDelegate {
     }
     
     @objc private func showSettings() {
-        // Close existing window if open
+        // If window already exists and is visible, just bring it to front
+        if let existingWindow = settingsWindow, existingWindow.isVisible {
+            existingWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        // Close existing window if it exists but isn't visible
         if let existingWindow = settingsWindow {
             existingWindow.close()
             settingsWindow = nil
@@ -674,3 +1032,111 @@ struct ConnectionStatusIcon: View {
         }
     }
 }
+// MARK: - Compact Status Bar View
+
+struct CompactStatusBarView: View {
+    let device1Label: String
+    let device1UpFormatted: (value: String, unit: String)
+    let device1DownFormatted: (value: String, unit: String)
+    
+    let device2Label: String
+    let device2UpFormatted: (value: String, unit: String)
+    let device2DownFormatted: (value: String, unit: String)
+    let device2Enabled: Bool
+    
+    let lanLabel: String
+    let lanUpFormatted: (value: String, unit: String)
+    let lanDownFormatted: (value: String, unit: String)
+    let lanEnabled: Bool
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            // Device 1
+            CompactConnectionIcon(
+                label: device1Label,
+                uploadFormatted: device1UpFormatted,
+                downloadFormatted: device1DownFormatted
+            )
+            
+            if device2Enabled {
+                Spacer().frame(width: 4)  // Reduced from 6
+                
+                CompactConnectionIcon(
+                    label: device2Label,
+                    uploadFormatted: device2UpFormatted,
+                    downloadFormatted: device2DownFormatted
+                )
+            }
+            
+            if lanEnabled {
+                Spacer().frame(width: 4)  // Reduced from 6
+                
+                CompactConnectionIcon(
+                    label: lanLabel,
+                    uploadFormatted: lanUpFormatted,
+                    downloadFormatted: lanDownFormatted
+                )
+            }
+        }
+        .font(.system(size: 10, weight: .regular, design: .monospaced))
+        .foregroundColor(.white)
+        .padding(.horizontal, 0)  // Removed padding for tighter compact mode
+        .frame(height: 22)
+    }
+}
+
+struct CompactConnectionIcon: View {
+    let label: String
+    let uploadFormatted: (value: String, unit: String)
+    let downloadFormatted: (value: String, unit: String)
+    
+    // Fixed widths for stable layout
+    private let valueWidth: CGFloat = 42  // Increased width for speed value + unit to prevent wrapping
+    private let labelWidth: CGFloat = 10  // Width for single letter
+    
+    var body: some View {
+        HStack(spacing: 2) {
+            // Label (first letter only) - fixed width
+            Text(String(label.prefix(1)).uppercased())
+                .foregroundColor(.white)
+                .font(.system(size: 9, weight: .semibold))
+                .frame(width: labelWidth)
+            
+            VStack(alignment: .trailing, spacing: -2) {  // Changed to trailing alignment
+                // Upload with arrow
+                HStack(spacing: 1) {
+                    Text(formatCompact(uploadFormatted))
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                        .frame(width: valueWidth, alignment: .trailing)  // Fixed width, right aligned
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 7))
+                        .foregroundColor(.red)
+                }
+                
+                // Download with arrow
+                HStack(spacing: 1) {
+                    Text(formatCompact(downloadFormatted))
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                        .frame(width: valueWidth, alignment: .trailing)  // Fixed width, right aligned
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 7))
+                        .foregroundColor(.blue)
+                }
+            }
+        }
+        .fixedSize()  // Prevent the view from expanding
+    }
+    
+    private func formatCompact(_ formatted: (value: String, unit: String)) -> String {
+        // Abbreviate units for compact mode
+        let unit = formatted.unit
+            .replacingOccurrences(of: "bps", with: "")
+            .replacingOccurrences(of: "B/s", with: "")
+            .replacingOccurrences(of: "ps", with: "")
+        
+        return "\(formatted.value)\(unit)"
+    }
+}
+
