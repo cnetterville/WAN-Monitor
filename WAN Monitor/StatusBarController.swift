@@ -70,22 +70,20 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
             return
         }
         
-        // Calculate width based on enabled devices - reduced for tighter layout
-        var width: CGFloat = 130 // Base width for device 1 (reduced from 150)
-        if config.device2Enabled {
-            width += 8 // Spacing between interfaces
-            width += 130 // Reduced from 150
-        }
-        if config.lanEnabled {
-            width += 8 // Spacing between interfaces
-            width += 110 // LAN is narrower (no latency), reduced from 150
-        }
+        // Determine whether to show latency/loss per device:
+        // Always show if the toggle is on, or if latency is at or above the warning threshold
+        let device1Latency = monitor.device1Latency ?? 0
+        let device2Latency = monitor.device2Latency ?? 0
+        let device1ShowLatency = config.device1ShowLatencyLoss ||
+            device1Latency >= config.device1LatencyWarningThreshold
+        let device2ShowLatency = config.device2ShowLatencyLoss ||
+            device2Latency >= config.device2LatencyWarningThreshold
         
         let statusBarView = StatusBarView(
             device1Label: config.device1Label,
             device1Up: monitor.device1UploadSpeed,
             device1Down: monitor.device1DownloadSpeed,
-            device1Latency: monitor.device1Latency ?? 0,
+            device1Latency: device1Latency,
             device1UpFormatted: monitor.device1FormattedUploadSpeed,
             device1DownFormatted: monitor.device1FormattedDownloadSpeed,
             device1LatencyFormatted: monitor.device1FormattedLatency,
@@ -93,7 +91,7 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
             device2Label: config.device2Label,
             device2Up: monitor.device2UploadSpeed,
             device2Down: monitor.device2DownloadSpeed,
-            device2Latency: monitor.device2Latency ?? 0,
+            device2Latency: device2Latency,
             device2UpFormatted: monitor.device2FormattedUploadSpeed,
             device2DownFormatted: monitor.device2FormattedDownloadSpeed,
             device2LatencyFormatted: monitor.device2FormattedLatency,
@@ -104,25 +102,24 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
             lanDown: monitor.lanDownloadSpeed,
             lanUpFormatted: monitor.lanFormattedUploadSpeed,
             lanDownFormatted: monitor.lanFormattedDownloadSpeed,
-            lanEnabled: config.lanEnabled
+            lanEnabled: config.lanEnabled,
+            device1ShowLatencyLoss: device1ShowLatency,
+            device2ShowLatencyLoss: device2ShowLatency
         )
         
         // Create hosting view if needed
         if hostingView == nil {
             hostingView = NSHostingView(rootView: AnyView(statusBarView))
-            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
             button.addSubview(hostingView!)
-            
-            // Clear button's image and title since we're using a custom view
             button.image = nil
             button.title = ""
         } else {
-            // Just update the root view - SwiftUI will handle efficient diffing
             hostingView?.rootView = AnyView(statusBarView)
-            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         }
         
-        // Update button length to match content
+        // Size to actual SwiftUI content width rather than hardcoded estimates
+        let width = hostingView?.fittingSize.width ?? 200
+        hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         statusItem?.length = width
     }
     
@@ -165,17 +162,6 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
         let config = NetworkConfiguration.shared
         
         // Compact view: show only speeds, no latency
-        // Width calculation: labelWidth (10) + spacing (2) + valueWidth (42) + arrow (~10) = ~64 per device
-        var width: CGFloat = 70 // Increased compact width for device 1 to prevent wrapping
-        if config.device2Enabled {
-            width += 4  // Spacing between devices
-            width += 70
-        }
-        if config.lanEnabled {
-            width += 4  // Spacing between devices
-            width += 70
-        }
-        
         let compactView = CompactStatusBarView(
             device1Label: config.device1Label,
             device1UpFormatted: monitor.device1FormattedUploadSpeed,
@@ -192,15 +178,16 @@ class StatusBarController: NSObject, NSWindowDelegate, NSMenuDelegate {
         
         if hostingView == nil {
             hostingView = NSHostingView(rootView: AnyView(compactView))
-            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
             button.addSubview(hostingView!)
             button.image = nil
             button.title = ""
         } else {
             hostingView?.rootView = AnyView(compactView)
-            hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         }
         
+        // Size to actual SwiftUI content width
+        let width = hostingView?.fittingSize.width ?? 150
+        hostingView?.frame = CGRect(x: 0, y: 0, width: width, height: 22)
         statusItem?.length = width
     }
 
@@ -872,6 +859,8 @@ struct StatusBarView: View {
     let lanDownFormatted: (value: String, unit: String)
     
     let lanEnabled: Bool
+    let device1ShowLatencyLoss: Bool
+    let device2ShowLatencyLoss: Bool
     
     var body: some View {
         HStack(spacing: 0) {
@@ -883,7 +872,7 @@ struct StatusBarView: View {
                 latencyFormatted: device1LatencyFormatted,
                 latencyValue: device1Latency,
                 packetLoss: device1PacketLoss,
-                showLatency: true
+                showLatency: device1ShowLatencyLoss
             )
             
             // Only show device 2 if enabled
@@ -899,7 +888,7 @@ struct StatusBarView: View {
                     latencyFormatted: device2LatencyFormatted,
                     latencyValue: device2Latency,
                     packetLoss: device2PacketLoss,
-                    showLatency: true
+                    showLatency: device2ShowLatencyLoss
                 )
             }
             

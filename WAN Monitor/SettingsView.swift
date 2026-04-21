@@ -310,6 +310,18 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                
+                Toggle("Show latency & loss for \(configuration.device1Label)", isOn: $configuration.device1ShowLatencyLoss)
+                    .onChange(of: configuration.device1ShowLatencyLoss) { _, _ in
+                        configuration.saveConfiguration()
+                    }
+                
+                if configuration.device2Enabled {
+                    Toggle("Show latency & loss for \(configuration.device2Label)", isOn: $configuration.device2ShowLatencyLoss)
+                        .onChange(of: configuration.device2ShowLatencyLoss) { _, _ in
+                            configuration.saveConfiguration()
+                        }
+                }
             }
             
             Section("Startup Behavior") {

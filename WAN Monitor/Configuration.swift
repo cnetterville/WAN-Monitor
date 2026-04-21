@@ -85,6 +85,8 @@ class NetworkConfiguration: ObservableObject {
     
     // Display settings
     @Published var compactMode: Bool = false // Compact menubar display
+    @Published var device1ShowLatencyLoss: Bool = true // Show latency and packet loss for device 1 in menubar
+    @Published var device2ShowLatencyLoss: Bool = true // Show latency and packet loss for device 2 in menubar
     
     private init() {
         // Load configuration synchronously to avoid race conditions
@@ -151,6 +153,8 @@ class NetworkConfiguration: ObservableObject {
         
         // Display settings
         defaults.set(compactMode, forKey: "compactMode")
+        defaults.set(device1ShowLatencyLoss, forKey: "device1ShowLatencyLoss")
+        defaults.set(device2ShowLatencyLoss, forKey: "device2ShowLatencyLoss")
     }
     
     private func loadConfiguration() {
@@ -303,6 +307,12 @@ class NetworkConfiguration: ObservableObject {
         // Display settings
         if defaults.object(forKey: "compactMode") != nil {
             compactMode = defaults.bool(forKey: "compactMode")
+        }
+        if defaults.object(forKey: "device1ShowLatencyLoss") != nil {
+            device1ShowLatencyLoss = defaults.bool(forKey: "device1ShowLatencyLoss")
+        }
+        if defaults.object(forKey: "device2ShowLatencyLoss") != nil {
+            device2ShowLatencyLoss = defaults.bool(forKey: "device2ShowLatencyLoss")
         }
         
         // Sync with actual login item status on startup
